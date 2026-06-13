@@ -1,0 +1,97 @@
+import SwiftUI
+
+enum AppTab: String, CaseIterable {
+    case memories = "回忆"
+    case library = "图库"
+    case profile = "我的"
+
+    var icon: String {
+        switch self {
+        case .memories: "sparkles.rectangle.stack"
+        case .library: "square.grid.2x2"
+        case .profile: "person"
+        }
+    }
+
+    var selectedIcon: String {
+        switch self {
+        case .memories: "sparkles.rectangle.stack.fill"
+        case .library: "square.grid.2x2.fill"
+        case .profile: "person.fill"
+        }
+    }
+}
+
+struct RootView: View {
+    @EnvironmentObject private var photoLibrary: PhotoLibraryStore
+    @State private var selectedTab: AppTab = .memories
+    @State private var searchPresented = false
+
+    var body: some View {
+        ZStack {
+            if photoLibrary.isPreparingSearch {
+                LaunchPreparationView(status: photoLibrary.searchPreparationStatus)
+                    .transition(.opacity)
+            } else {
+                ZStack(alignment: .bottom) {
+                    PickPicTheme.canvas.ignoresSafeArea()
+
+                    Group {
+                        switch selectedTab {
+                        case .memories:
+                            MemoriesView(photoLibrary: photoLibrary, onSearch: { searchPresented = true })
+                        case .library:
+                            LibraryView(photoLibrary: photoLibrary)
+                        case .profile:
+                            ProfileView(photoLibrary: photoLibrary)
+                        }
+                    }
+
+                    AdaptiveDock(selectedTab: $selectedTab, onSearch: { searchPresented = true })
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 8)
+                }
+                .transition(.opacity)
+            }
+        }
+        .tint(PickPicTheme.ink)
+        .sheet(isPresented: $searchPresented) {
+            SearchView(photoLibrary: photoLibrary)
+                .presentationBackground(.clear)
+                .presentationDetents([.large])
+        }
+        .animation(.easeInOut(duration: 0.45), value: photoLibrary.isPreparingSearch)
+    }
+}
+
+private struct LaunchPreparationView: View {
+    let status: String
+
+    var body: some View {
+        ZStack {
+            PickPicTheme.canvas.ignoresSafeArea()
+
+            Circle()
+                .fill(.white.opacity(0.55))
+                .frame(width: 340, height: 340)
+                .blur(radius: 3)
+
+            VStack(spacing: 18) {
+                PickPicBrandMark(size: 92, cornerRadius: 30, showsShadow: true)
+
+                Text("PickPic")
+                    .font(.system(size: 36, weight: .semibold, design: .rounded))
+                    .foregroundStyle(PickPicTheme.ink)
+
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(PickPicTheme.ink)
+                    .padding(.top, 10)
+
+                Text(status)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(PickPicTheme.secondaryInk)
+            }
+        }
+    }
+}

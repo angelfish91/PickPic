@@ -1,0 +1,203 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 77;
+	objects = {
+		111111111111111111111111 = {
+			isa = PBXFileReference;
+			lastKnownFileType = wrapper.application;
+			path = PickPic.app;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		222222222222222222222222 = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PickPic;
+			sourceTree = "<group>";
+		};
+		333333333333333333333333 = {
+			isa = PBXGroup;
+			children = (
+				222222222222222222222222,
+				444444444444444444444444,
+			);
+			sourceTree = "<group>";
+		};
+		444444444444444444444444 = {
+			isa = PBXGroup;
+			children = (111111111111111111111111);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		555555555555555555555555 = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		666666666666666666666666 = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		777777777777777777777777 = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		888888888888888888888888 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AAAAAAAAAAAAAAAAAAAAAAAA;
+			buildPhases = (
+				777777777777777777777777,
+				555555555555555555555555,
+				666666666666666666666666,
+			);
+			buildRules = ();
+			dependencies = ();
+			fileSystemSynchronizedGroups = (222222222222222222222222);
+			name = PickPic;
+			packageProductDependencies = ();
+			productName = PickPic;
+			productReference = 111111111111111111111111;
+			productType = "com.apple.product-type.application";
+		};
+		999999999999999999999999 = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2650;
+				LastUpgradeCheck = 2650;
+				TargetAttributes = {
+					888888888888888888888888 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+				};
+			};
+			buildConfigurationList = BBBBBBBBBBBBBBBBBBBBBBBB;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base);
+			mainGroup = 333333333333333333333333;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 444444444444444444444444;
+			packageReferences = ();
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (888888888888888888888888);
+		};
+		AAAAAAAAAAAAAAAAAAAAAAAA = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CCCCCCCCCCCCCCCCCCCCCCCC,
+				DDDDDDDDDDDDDDDDDDDDDDDD,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BBBBBBBBBBBBBBBBBBBBBBBB = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EEEEEEEEEEEEEEEEEEEEEEEE,
+				FFFFFFFFFFFFFFFFFFFFFFFF,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		CCCCCCCCCCCCCCCCCCCCCCCC = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "PickPic-Info.plist";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "PickPic 使用你的照片生成回忆、相册与语义搜索结果。";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "PickPic 将你生成的回忆视频保存到照片图库。";
+				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = "com.sparrowsong.PickPic.background-index";
+				INFOPLIST_KEY_UIBackgroundModes = processing;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sparrowsong.PickPic;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DDDDDDDDDDDDDDDDDDDDDDDD = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "PickPic-Info.plist";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "PickPic 使用你的照片生成回忆、相册与语义搜索结果。";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "PickPic 将你生成的回忆视频保存到照片图库。";
+				INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers = "com.sparrowsong.PickPic.background-index";
+				INFOPLIST_KEY_UIBackgroundModes = processing;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sparrowsong.PickPic;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		EEEEEEEEEEEEEEEEEEEEEEEE = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		FFFFFFFFFFFFFFFFFFFFFFFF = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+	};
+	rootObject = 999999999999999999999999;
+}
