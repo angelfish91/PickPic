@@ -7,8 +7,7 @@ struct PickPicApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environmentObject(photoLibrary)
+            RootView(photoLibrary: photoLibrary)
                 .task {
                     await photoLibrary.start()
                 }

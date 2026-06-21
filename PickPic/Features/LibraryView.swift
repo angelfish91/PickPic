@@ -85,6 +85,18 @@ struct LibraryView: View {
         }
         .onDisappear {
             photoLibrary.endPhotoBrowsing()
+            PhotoThumbnailPipeline.shared.stopPreheating()
+        }
+        .task(id: visiblePhotoCount) {
+            let start = min(visiblePhotoCount, photoLibrary.assets.count)
+            let end = min(start + pageSize * 2, photoLibrary.assets.count)
+            guard start < end else { return }
+            let scale = UIScreen.main.scale
+            let side = ceil((UIScreen.main.bounds.width / 3) * scale / 64) * 64
+            PhotoThumbnailPipeline.shared.preheat(
+                Array(photoLibrary.assets[start..<end]),
+                targetSize: CGSize(width: side, height: side)
+            )
         }
     }
 

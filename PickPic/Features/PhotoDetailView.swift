@@ -13,11 +13,13 @@ struct PhotoDetailView: View {
     let assets: [PHAsset]
     let initialAssetID: String
     let query: String?
-    @ObservedObject var photoLibrary: PhotoLibraryStore
+    let photoLibrary: PhotoLibraryStore
     var onMarkedIrrelevant: ((String) -> Void)?
+    private let assetIndexByID: [String: Int]
 
     @Environment(\.dismiss) private var dismiss
     @State private var currentAssetID: String
+    @State private var currentAssetIsFavorite: Bool
     @State private var metadataPresented = false
     @State private var shareImage: ShareImage?
 
@@ -33,15 +35,22 @@ struct PhotoDetailView: View {
         self.query = query
         self.photoLibrary = photoLibrary
         self.onMarkedIrrelevant = onMarkedIrrelevant
+        assetIndexByID = Dictionary(
+            uniqueKeysWithValues: assets.enumerated().map { ($0.element.localIdentifier, $0.offset) }
+        )
         _currentAssetID = State(initialValue: initialAssetID)
+        _currentAssetIsFavorite = State(
+            initialValue: assets.first(where: { $0.localIdentifier == initialAssetID })
+                .map(photoLibrary.isFavorite) ?? false
+        )
     }
 
     private var currentAsset: PHAsset {
-        assets.first { $0.localIdentifier == currentAssetID } ?? assets[0]
+        assets[currentIndex]
     }
 
     private var currentIndex: Int {
-        assets.firstIndex { $0.localIdentifier == currentAssetID } ?? 0
+        assetIndexByID[currentAssetID] ?? 0
     }
 
     var body: some View {
@@ -50,7 +59,8 @@ struct PhotoDetailView: View {
 
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
-                    ForEach(Array(assets.enumerated()), id: \.element.localIdentifier) { index, asset in
+                    ForEach(assets.indices, id: \.self) { index in
+                        let asset = assets[index]
                         OriginalPhotoPage(
                             asset: asset,
                             isActive: index == currentIndex
@@ -100,6 +110,9 @@ struct PhotoDetailView: View {
         .onChange(of: initialAssetID) { _, assetID in
             currentAssetID = assetID
         }
+        .onChange(of: currentAssetID) { _, _ in
+            currentAssetIsFavorite = photoLibrary.isFavorite(currentAsset)
+        }
         .onDisappear {
             photoLibrary.endPhotoBrowsing()
         }
@@ -112,7 +125,7 @@ struct PhotoDetailView: View {
                     .detailControl()
             }
             Spacer()
-            Text("\((assets.firstIndex { $0.localIdentifier == currentAssetID } ?? 0) + 1) / \(assets.count)")
+            Text("\(currentIndex + 1) / \(assets.count)")
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white.opacity(0.72))
                 .padding(.horizontal, 12)
@@ -124,10 +137,11 @@ struct PhotoDetailView: View {
     private var actionBar: some View {
         HStack(spacing: 18) {
             detailAction(
-                title: photoLibrary.isFavorite(currentAsset) ? "已收藏" : "收藏",
-                icon: photoLibrary.isFavorite(currentAsset) ? "heart.fill" : "heart"
+                title: currentAssetIsFavorite ? "已收藏" : "收藏",
+                icon: currentAssetIsFavorite ? "heart.fill" : "heart"
             ) {
                 photoLibrary.toggleFavorite(currentAsset)
+                currentAssetIsFavorite.toggle()
             }
 
             detailAction(title: "分享", icon: "square.and.arrow.up") {
@@ -537,7 +551,7 @@ private enum PhotoDisplayLoader {
     }
 
     static func detailedImage(for asset: PHAsset) async -> UIImage? {
-        await image(for: asset, longestSide: 4096, quality: "detail")
+        await image(for: asset, longestSide: 3072, quality: "detail")
     }
 
     private static func image(

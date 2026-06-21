@@ -23,36 +23,30 @@ enum AppTab: String, CaseIterable {
 }
 
 struct RootView: View {
-    @EnvironmentObject private var photoLibrary: PhotoLibraryStore
+    let photoLibrary: PhotoLibraryStore
     @State private var selectedTab: AppTab = .memories
     @State private var searchPresented = false
 
     var body: some View {
-        ZStack {
-            if photoLibrary.isPreparingSearch {
-                LaunchPreparationView(status: photoLibrary.searchPreparationStatus)
-                    .transition(.opacity)
-            } else {
-                ZStack(alignment: .bottom) {
-                    PickPicTheme.canvas.ignoresSafeArea()
+        ZStack(alignment: .bottom) {
+            PickPicTheme.canvas.ignoresSafeArea()
 
-                    Group {
-                        switch selectedTab {
-                        case .memories:
-                            MemoriesView(photoLibrary: photoLibrary, onSearch: { searchPresented = true })
-                        case .library:
-                            LibraryView(photoLibrary: photoLibrary)
-                        case .profile:
-                            ProfileView(photoLibrary: photoLibrary)
-                        }
-                    }
-
-                    AdaptiveDock(selectedTab: $selectedTab, onSearch: { searchPresented = true })
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 8)
+            Group {
+                switch selectedTab {
+                case .memories:
+                    MemoriesView(photoLibrary: photoLibrary, onSearch: { searchPresented = true })
+                case .library:
+                    LibraryView(photoLibrary: photoLibrary)
+                case .profile:
+                    ProfileView(photoLibrary: photoLibrary)
                 }
-                .transition(.opacity)
             }
+
+            AdaptiveDock(selectedTab: $selectedTab, onSearch: { searchPresented = true })
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+
+            LaunchPreparationOverlay(photoLibrary: photoLibrary)
         }
         .tint(PickPicTheme.ink)
         .sheet(isPresented: $searchPresented) {
@@ -60,7 +54,18 @@ struct RootView: View {
                 .presentationBackground(.clear)
                 .presentationDetents([.large])
         }
-        .animation(.easeInOut(duration: 0.45), value: photoLibrary.isPreparingSearch)
+    }
+}
+
+private struct LaunchPreparationOverlay: View {
+    @ObservedObject var photoLibrary: PhotoLibraryStore
+
+    var body: some View {
+        if photoLibrary.isPreparingSearch {
+            LaunchPreparationView(status: photoLibrary.searchPreparationStatus)
+                .transition(.opacity)
+                .zIndex(10)
+        }
     }
 }
 

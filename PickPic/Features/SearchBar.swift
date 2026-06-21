@@ -34,9 +34,9 @@ struct SearchView: View {
     @State private var query = ""
     @State private var results: [SemanticSearchResult] = []
     @State private var isSearching = false
-    @State private var isDebouncing = false
     @State private var searchProgress: SemanticSearchProgress?
     @State private var selectedResult: SemanticSearchResult?
+    @State private var lastSearchedQuery = ""
     @FocusState private var focused: Bool
 
     private let suggestions = ["去年夏天的海边", "和朋友吃饭", "下雨天散步", "有橘色晚霞的照片"]
@@ -67,6 +67,9 @@ struct SearchView: View {
                         TextField("描述一段回忆", text: $query)
                             .focused($focused)
                             .submitLabel(.search)
+                            .onSubmit {
+                                Task { await performSearch() }
+                            }
                         if !query.isEmpty {
                             Button(action: { query = "" }) {
                                 Image(systemName: "xmark.circle.fill")
@@ -80,10 +83,23 @@ struct SearchView: View {
                         RoundedRectangle(cornerRadius: 20, style: .continuous)
                             .stroke(.white.opacity(0.22), lineWidth: 0.7)
                     }
+
+                    Button {
+                        Task { await performSearch() }
+                    } label: {
+                        Text("搜索")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 58, height: 44)
+                            .background(.white, in: Capsule())
+                            .foregroundStyle(Color.black)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(trimmedQuery.isEmpty || isSearching)
+                    .opacity(trimmedQuery.isEmpty ? 0.42 : 1)
                 }
                 .foregroundStyle(.white)
 
-                Text(query.isEmpty ? "可以这样找" : results.isEmpty ? "没有找到相似回忆" : "找到了这些回忆")
+                Text(searchHeading)
                     .font(.system(size: 28, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
 
@@ -114,7 +130,13 @@ struct SearchView: View {
             }
             .padding(20)
         }
-        .onAppear { focused = true }
+        .onAppear {
+            focused = true
+            photoLibrary.beginPhotoBrowsing()
+        }
+        .onDisappear {
+            photoLibrary.endPhotoBrowsing()
+        }
         .fullScreenCover(item: $selectedResult) { result in
             PhotoDetailView(
                 assets: results.map(\.asset),
@@ -125,39 +147,19 @@ struct SearchView: View {
                 results.removeAll { $0.id == assetID }
             }
         }
-        .task(id: query) {
-            guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        .onChange(of: query) { _, newValue in
+            if newValue.trimmingCharacters(in: .whitespacesAndNewlines) != lastSearchedQuery {
                 results = []
-                isSearching = false
-                isDebouncing = false
                 searchProgress = nil
-                return
             }
-
-            isDebouncing = true
-            isSearching = false
-            searchProgress = nil
-            try? await Task.sleep(for: .milliseconds(450))
-            guard !Task.isCancelled else { return }
-            isDebouncing = false
-            isSearching = true
-            let activeQuery = query
-            results = await photoLibrary.search(activeQuery) { progress in
-                await MainActor.run {
-                    guard query == activeQuery else { return }
-                    searchProgress = progress
-                }
-            }
-            guard !Task.isCancelled, query == activeQuery else { return }
-            isSearching = false
         }
     }
 
     private var semanticResults: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if isSearching || isDebouncing {
+            if isSearching {
                 SearchProgressCard(
-                    isDebouncing: isDebouncing,
+                    isDebouncing: false,
                     progress: searchProgress
                 )
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -166,11 +168,11 @@ struct SearchView: View {
             HStack {
                 Text("\(results.count) 个匹配结果")
                 Spacer()
-                if isSearching || isDebouncing {
+                if isSearching {
                     ProgressView()
                         .controlSize(.small)
                         .tint(.white.opacity(0.7))
-                    Text(isDebouncing ? "等待输入完成" : "正在搜索")
+                    Text("正在搜索")
                 } else if photoLibrary.isVisualScanning {
                     Text("增量扫描中 \(photoLibrary.visualScanProgress)/\(photoLibrary.visualScanTotal)")
                 }
@@ -211,7 +213,38 @@ struct SearchView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: isSearching)
-        .animation(.easeInOut(duration: 0.25), value: isDebouncing)
+    }
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var searchHeading: String {
+        if query.isEmpty { return "可以这样找" }
+        if isSearching { return "正在寻找回忆" }
+        if lastSearchedQuery != trimmedQuery { return "准备好后开始搜索" }
+        return results.isEmpty ? "没有找到相似回忆" : "找到了这些回忆"
+    }
+
+    private func performSearch() async {
+        let activeQuery = trimmedQuery
+        guard !activeQuery.isEmpty, !isSearching else { return }
+        focused = false
+        isSearching = true
+        searchProgress = nil
+        lastSearchedQuery = activeQuery
+        let matches = await photoLibrary.search(activeQuery) { progress in
+            await MainActor.run {
+                guard query.trimmingCharacters(in: .whitespacesAndNewlines) == activeQuery else { return }
+                searchProgress = progress
+            }
+        }
+        guard trimmedQuery == activeQuery else {
+            isSearching = false
+            return
+        }
+        results = matches
+        isSearching = false
     }
 }
 

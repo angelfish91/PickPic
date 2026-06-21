@@ -23,7 +23,7 @@ PickPic 是一个原生 SwiftUI 照片应用，用来重新理解本地照片库
 - BackgroundTasks
 - SQLite3
 
-项目最低部署版本为 iOS 18.0，支持 iPhone、iPad，并开启了 Mac Catalyst。
+项目最低部署版本为 inpx skills add nexu-io/open-design@frontend-designOS 18.0，支持 iPhone、iPad，并开启了 Mac Catalyst。
 
 ## 项目结构
 

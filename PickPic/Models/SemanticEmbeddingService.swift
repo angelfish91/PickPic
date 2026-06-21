@@ -1,3 +1,4 @@
+import Accelerate
 import CoreML
 import Photos
 import SQLite3
@@ -69,10 +70,12 @@ actor SemanticEmbeddingService {
     private let legacyIndexURL: URL
     private let database: SemanticIndexDatabase?
     private var entries: [String: IndexEntry] = [:]
+    private var refinedEntryCount = 0
     private var pendingDatabaseWrites = 0
     private var imageModel: MLModel?
     private var textModel: MLModel?
     private var tokenizer: SigLIPTokenizer?
+    private var textEmbeddingCache: [String: [Float]] = [:]
     private var didAttemptLoad = false
     private(set) var status = "等待加载语义模型"
 
@@ -89,6 +92,7 @@ actor SemanticEmbeddingService {
 
         if let database, !database.isEmpty {
             entries = database.loadEntries()
+            refinedEntryCount = entries.values.count(where: { $0.quality == .refined })
             return
         }
 
@@ -108,6 +112,7 @@ actor SemanticEmbeddingService {
             status = "索引文件损坏，正在自动重建"
             return
         }
+        refinedEntryCount = entries.values.count(where: { $0.quality == .refined })
 
         if let database {
             database.replaceAll(entries)
@@ -157,7 +162,7 @@ actor SemanticEmbeddingService {
     }
 
     var refinedCount: Int {
-        entries.values.count(where: { $0.quality == .refined })
+        refinedEntryCount
     }
 
     func requiresIndex(_ asset: PHAsset, quality: SemanticIndexQuality = .thumbnail) -> Bool {
@@ -186,6 +191,9 @@ actor SemanticEmbeddingService {
         guard !staleIDs.isEmpty else { return 0 }
 
         for assetID in staleIDs {
+            if entries[assetID]?.quality == .refined {
+                refinedEntryCount -= 1
+            }
             entries.removeValue(forKey: assetID)
         }
         database?.delete(assetIDs: staleIDs)
@@ -194,12 +202,20 @@ actor SemanticEmbeddingService {
     }
 
     @discardableResult
-    func index(asset: PHAsset, quality: SemanticIndexQuality = .thumbnail) async -> Bool {
+    func index(
+        asset: PHAsset,
+        quality: SemanticIndexQuality = .thumbnail,
+        allowNetworkAccess: Bool = true
+    ) async -> Bool {
         await prepare()
         guard isAvailable else { return false }
         guard requiresIndex(asset, quality: quality) else { return true }
         guard
-              let image = await Self.requestImage(for: asset, quality: quality),
+              let image = await Self.requestImage(
+                for: asset,
+                quality: quality,
+                allowNetworkAccess: allowNetworkAccess
+              ),
               let vector = imageEmbedding(for: image)
         else {
             status = quality == .thumbnail
@@ -213,17 +229,29 @@ actor SemanticEmbeddingService {
             quality: quality,
             vector: vector
         )
+        let previousQuality = entries[asset.localIdentifier]?.quality
         entries[asset.localIdentifier] = entry
+        if previousQuality != .refined, quality == .refined {
+            refinedEntryCount += 1
+        }
         database?.upsert(assetID: asset.localIdentifier, entry: entry)
         pendingDatabaseWrites += 1
         status = quality == .thumbnail
             ? "已快速覆盖 \(entries.count) 张照片"
-            : "已精细化 \(entries.values.count(where: { $0.quality == .refined })) 张照片"
+            : "已精细化 \(refinedEntryCount) 张照片"
         if pendingDatabaseWrites >= 100 {
             database?.commit()
             pendingDatabaseWrites = 0
         }
         return true
+    }
+
+    func clearIndex() {
+        entries = [:]
+        refinedEntryCount = 0
+        pendingDatabaseWrites = 0
+        database?.clear()
+        status = "语义索引已清除"
     }
 
     func search(
@@ -274,23 +302,32 @@ actor SemanticEmbeddingService {
         }
         guard !themeVectors.isEmpty else { return [:] }
 
+        var candidatesByTheme = Dictionary(
+            uniqueKeysWithValues: themeVectors.map { ($0.name, [SemanticEmbeddingMatch]()) }
+        )
+        for entry in entries {
+            for theme in themeVectors {
+                let match = SemanticEmbeddingMatch(
+                    assetID: entry.key,
+                    score: Self.dot(theme.vector, entry.value.vector)
+                )
+                let insertionIndex = candidatesByTheme[theme.name, default: []]
+                    .firstIndex(where: { match.score > $0.score })
+                    ?? candidatesByTheme[theme.name, default: []].endIndex
+                candidatesByTheme[theme.name, default: []].insert(match, at: insertionIndex)
+                if candidatesByTheme[theme.name, default: []].count > limitPerTheme {
+                    candidatesByTheme[theme.name, default: []].removeLast()
+                }
+            }
+        }
+
         var matchesByTheme: [String: [SemanticEmbeddingMatch]] = [:]
         for theme in themeVectors {
-            var matches: [SemanticEmbeddingMatch] = []
-            matches.reserveCapacity(entries.count)
-            for entry in entries {
-                matches.append(
-                    SemanticEmbeddingMatch(
-                        assetID: entry.key,
-                        score: Self.dot(theme.vector, entry.value.vector)
-                    )
-                )
-            }
-            let sorted = matches.sorted { $0.score > $1.score }
-            guard let bestScore = sorted.first?.score else { continue }
+            let candidates = candidatesByTheme[theme.name] ?? []
+            guard let bestScore = candidates.first?.score else { continue }
             let threshold = max(minimumScore, bestScore - maximumScoreDrop)
             matchesByTheme[theme.name] = Array(
-                sorted.prefix { $0.score >= threshold }.prefix(limitPerTheme)
+                candidates.prefix { $0.score >= threshold }
             )
         }
         return matchesByTheme
@@ -302,6 +339,9 @@ actor SemanticEmbeddingService {
     }
 
     private func textEmbedding(for text: String) -> [Float]? {
+        if let cached = textEmbeddingCache[text] {
+            return cached
+        }
         guard let textModel, let tokenizer else { return nil }
         let tokens = Array((tokenizer.encode(text) + [tokenizer.eosTokenID]).prefix(64))
         guard let input = try? MLMultiArray(shape: [1, 64], dataType: .int32) else {
@@ -318,7 +358,12 @@ actor SemanticEmbeddingService {
         else {
             return nil
         }
-        return Self.vector(from: embedding)
+        let vector = Self.vector(from: embedding)
+        if textEmbeddingCache.count >= 32 {
+            textEmbeddingCache.removeAll(keepingCapacity: true)
+        }
+        textEmbeddingCache[text] = vector
+        return vector
     }
 
     private func imageEmbedding(for image: UIImage) -> [Float]? {
@@ -348,15 +393,20 @@ actor SemanticEmbeddingService {
     }
 
     private static func dot(_ lhs: [Float], _ rhs: [Float]) -> Float {
-        zip(lhs, rhs).reduce(0) { $0 + $1.0 * $1.1 }
+        guard lhs.count == rhs.count, !lhs.isEmpty else { return 0 }
+        return vDSP.dot(lhs, rhs)
     }
 
-    private static func requestImage(for asset: PHAsset, quality: SemanticIndexQuality) async -> UIImage? {
+    private static func requestImage(
+        for asset: PHAsset,
+        quality: SemanticIndexQuality,
+        allowNetworkAccess: Bool
+    ) async -> UIImage? {
         await withCheckedContinuation { continuation in
             let options = PHImageRequestOptions()
             options.deliveryMode = quality == .thumbnail ? .fastFormat : .highQualityFormat
             options.resizeMode = quality == .thumbnail ? .fast : .exact
-            options.isNetworkAccessAllowed = quality == .refined
+            options.isNetworkAccessAllowed = quality == .refined && allowNetworkAccess
 
             let lock = NSLock()
             var finished = false
@@ -505,6 +555,12 @@ private final class SemanticIndexDatabase {
         guard transactionOpen else { return }
         execute("COMMIT")
         transactionOpen = false
+    }
+
+    func clear() {
+        commit()
+        execute("DELETE FROM embeddings")
+        execute("VACUUM")
     }
 
     private func upsert(

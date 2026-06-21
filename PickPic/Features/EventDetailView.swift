@@ -4,7 +4,7 @@ import SwiftUI
 
 struct EventDetailView: View {
     let event: PhotoEvent
-    @ObservedObject var photoLibrary: PhotoLibraryStore
+    let photoLibrary: PhotoLibraryStore
     @Environment(\.dismiss) private var dismiss
     @State private var selectedPhoto: PhotoBrowserSelection?
     @State private var isSlideshowPresented = false
@@ -81,6 +81,12 @@ struct EventDetailView: View {
         }
         .fullScreenCover(isPresented: $isSlideshowPresented) {
             LiveMemorySlideshow(assets: event.assets)
+        }
+        .onAppear {
+            photoLibrary.beginPhotoBrowsing()
+        }
+        .onDisappear {
+            photoLibrary.endPhotoBrowsing()
         }
     }
 

@@ -1,6 +1,8 @@
 import BackgroundTasks
 import Photos
 import CoreLocation
+import Network
+import SQLite3
 import SwiftUI
 
 struct PhotoEvent: Identifiable {
@@ -52,11 +54,219 @@ private struct VisualAnalysisCacheDocument: Codable {
     var entries: [String: PhotoVisualAnalysis]
 }
 
+private struct CachedPhotoEvent {
+    let id: String
+    let assetIDs: [String]
+    let startDate: Date
+    let endDate: Date
+    let coverAssetID: String
+    let semanticTitle: String?
+}
+
+private struct PhotoAssetSnapshot {
+    let id: String
+    let modifiedAt: TimeInterval?
+}
+
 struct PhotoFeedbackEvent: Codable {
     let query: String
     let assetID: String
     let kind: String
     let createdAt: Date
+}
+
+private final class PhotoEventCache {
+    private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    private var handle: OpaquePointer?
+
+    init(url: URL) {
+        guard sqlite3_open(url.path, &handle) == SQLITE_OK else {
+            handle = nil
+            return
+        }
+        execute("PRAGMA journal_mode=WAL")
+        execute("PRAGMA synchronous=NORMAL")
+        execute("""
+            CREATE TABLE IF NOT EXISTS asset_snapshot (
+                position INTEGER PRIMARY KEY,
+                asset_id TEXT NOT NULL,
+                modified_at REAL
+            )
+            """)
+        execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                event_id TEXT PRIMARY KEY,
+                start_date REAL NOT NULL,
+                end_date REAL NOT NULL,
+                cover_asset_id TEXT NOT NULL,
+                semantic_title TEXT,
+                asset_ids BLOB NOT NULL
+            )
+            """)
+    }
+
+    deinit {
+        if let handle {
+            sqlite3_close(handle)
+        }
+    }
+
+    func loadEvents(matching snapshots: [PhotoAssetSnapshot]) -> [CachedPhotoEvent]? {
+        guard snapshotMatches(snapshots) else { return nil }
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(
+            handle,
+            """
+            SELECT event_id, start_date, end_date, cover_asset_id, semantic_title, asset_ids
+            FROM events ORDER BY end_date DESC
+            """,
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else {
+            return nil
+        }
+
+        var events: [CachedPhotoEvent] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let idText = sqlite3_column_text(statement, 0),
+                  let coverText = sqlite3_column_text(statement, 3),
+                  let bytes = sqlite3_column_blob(statement, 5)
+            else {
+                return nil
+            }
+            let byteCount = Int(sqlite3_column_bytes(statement, 5))
+            let data = Data(bytes: bytes, count: byteCount)
+            guard let assetIDs = try? JSONDecoder().decode([String].self, from: data) else {
+                return nil
+            }
+            let title = sqlite3_column_text(statement, 4).map { String(cString: $0) }
+            events.append(
+                CachedPhotoEvent(
+                    id: String(cString: idText),
+                    assetIDs: assetIDs,
+                    startDate: Date(timeIntervalSinceReferenceDate: sqlite3_column_double(statement, 1)),
+                    endDate: Date(timeIntervalSinceReferenceDate: sqlite3_column_double(statement, 2)),
+                    coverAssetID: String(cString: coverText),
+                    semanticTitle: title
+                )
+            )
+        }
+        return events
+    }
+
+    func matches(_ snapshots: [PhotoAssetSnapshot]) -> Bool {
+        snapshotMatches(snapshots)
+    }
+
+    func replace(events: [PhotoEvent], snapshots: [PhotoAssetSnapshot]) {
+        guard handle != nil else { return }
+        execute("BEGIN IMMEDIATE")
+        execute("DELETE FROM asset_snapshot")
+        execute("DELETE FROM events")
+
+        var snapshotStatement: OpaquePointer?
+        if sqlite3_prepare_v2(
+            handle,
+            "INSERT INTO asset_snapshot(position, asset_id, modified_at) VALUES(?, ?, ?)",
+            -1,
+            &snapshotStatement,
+            nil
+        ) == SQLITE_OK {
+            for (position, snapshot) in snapshots.enumerated() {
+                sqlite3_reset(snapshotStatement)
+                sqlite3_clear_bindings(snapshotStatement)
+                sqlite3_bind_int64(snapshotStatement, 1, Int64(position))
+                sqlite3_bind_text(snapshotStatement, 2, snapshot.id, -1, Self.transient)
+                if let modifiedAt = snapshot.modifiedAt {
+                    sqlite3_bind_double(snapshotStatement, 3, modifiedAt)
+                } else {
+                    sqlite3_bind_null(snapshotStatement, 3)
+                }
+                sqlite3_step(snapshotStatement)
+            }
+        }
+        sqlite3_finalize(snapshotStatement)
+
+        var eventStatement: OpaquePointer?
+        if sqlite3_prepare_v2(
+            handle,
+            """
+            INSERT INTO events(event_id, start_date, end_date, cover_asset_id, semantic_title, asset_ids)
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            -1,
+            &eventStatement,
+            nil
+        ) == SQLITE_OK {
+            for event in events {
+                guard let assetData = try? JSONEncoder().encode(event.assets.map(\.localIdentifier)) else {
+                    continue
+                }
+                sqlite3_reset(eventStatement)
+                sqlite3_clear_bindings(eventStatement)
+                sqlite3_bind_text(eventStatement, 1, event.id, -1, Self.transient)
+                sqlite3_bind_double(eventStatement, 2, event.startDate.timeIntervalSinceReferenceDate)
+                sqlite3_bind_double(eventStatement, 3, event.endDate.timeIntervalSinceReferenceDate)
+                sqlite3_bind_text(eventStatement, 4, event.coverAsset.localIdentifier, -1, Self.transient)
+                if let title = event.semanticTitle {
+                    sqlite3_bind_text(eventStatement, 5, title, -1, Self.transient)
+                } else {
+                    sqlite3_bind_null(eventStatement, 5)
+                }
+                assetData.withUnsafeBytes { bytes in
+                    sqlite3_bind_blob(eventStatement, 6, bytes.baseAddress, Int32(bytes.count), Self.transient)
+                    sqlite3_step(eventStatement)
+                }
+            }
+        }
+        sqlite3_finalize(eventStatement)
+        execute("COMMIT")
+    }
+
+    func clear() {
+        execute("DELETE FROM asset_snapshot")
+        execute("DELETE FROM events")
+        execute("VACUUM")
+    }
+
+    private func snapshotMatches(_ snapshots: [PhotoAssetSnapshot]) -> Bool {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(
+            handle,
+            "SELECT asset_id, modified_at FROM asset_snapshot ORDER BY position",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK else {
+            return false
+        }
+
+        var position = 0
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard position < snapshots.count,
+                  let idText = sqlite3_column_text(statement, 0),
+                  String(cString: idText) == snapshots[position].id
+            else {
+                return false
+            }
+            let storedModifiedAt = sqlite3_column_type(statement, 1) == SQLITE_NULL
+                ? nil
+                : sqlite3_column_double(statement, 1)
+            guard storedModifiedAt == snapshots[position].modifiedAt else {
+                return false
+            }
+            position += 1
+        }
+        return position == snapshots.count
+    }
+
+    private func execute(_ sql: String) {
+        guard let handle else { return }
+        sqlite3_exec(handle, sql, nil, nil, nil)
+    }
 }
 
 @MainActor
@@ -87,11 +297,23 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
     @Published private(set) var authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @Published private(set) var isLoading = false
     @Published private(set) var favoriteAssetIDs: Set<String> = []
+    @Published var downloadsICloudOnWiFiOnly: Bool {
+        didSet {
+            UserDefaults.standard.set(downloadsICloudOnWiFiOnly, forKey: Self.wifiOnlyPreferenceKey)
+        }
+    }
+    @Published private(set) var isOnWiFi = false
+    @Published private(set) var cacheByteCount: Int64 = 0
+    @Published private(set) var isManagingCache = false
     private var metadataAssets: [PHAsset] = []
+    private var libraryFetchResult: PHFetchResult<PHAsset>?
     private var visualAnalyses: [String: PhotoVisualAnalysis] = [:]
     private var pendingLibraryRefresh = false
     private let interactionURL: URL
     private let visualAnalysisCacheURL: URL
+    private let eventCache: PhotoEventCache
+    private let supportDirectory: URL
+    private let networkMonitor = NWPathMonitor()
     private var irrelevantAssetIDsByQuery: [String: Set<String>] = [:]
     private var feedbackEvents: [PhotoFeedbackEvent] = []
     private let visualAnalysisCacheVersion = 1
@@ -100,6 +322,14 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
     private var isBackgroundProcessingAllowed = false
     private var scenePhaseGeneration = 0
     private var travelLocationTask: Task<Void, Never>?
+    private var startupPreparationTask: Task<Void, Never>?
+    private var startupLibrarySnapshotMatched = false
+    private var cachedMemoryEvents: [PhotoEvent] = []
+    private var cachedFeaturedMemoryEvents: [PhotoEvent] = []
+    private var cachedTodayMemoryEvents: [PhotoEvent] = []
+    private var cachedTimeCapsuleEvents: [PhotoEvent] = []
+    private var assetsByID: [String: PHAsset] = [:]
+    private static let wifiOnlyPreferenceKey = "downloadsICloudOnWiFiOnly"
 
     override init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -107,13 +337,26 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         interactionURL = directory.appendingPathComponent("photo-interactions-v1.json")
         visualAnalysisCacheURL = directory.appendingPathComponent("visual-analysis-cache-v1.plist")
+        eventCache = PhotoEventCache(url: directory.appendingPathComponent("photo-events-v1.sqlite"))
+        supportDirectory = directory
+        downloadsICloudOnWiFiOnly = UserDefaults.standard.object(
+            forKey: Self.wifiOnlyPreferenceKey
+        ) as? Bool ?? true
         super.init()
         loadInteractions()
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor [weak self] in
+                self?.isOnWiFi = path.status == .satisfied && path.usesInterfaceType(.wifi)
+            }
+        }
+        networkMonitor.start(queue: DispatchQueue(label: "PickPic.NetworkMonitor"))
         PHPhotoLibrary.shared().register(self)
         registerBackgroundIndexTask()
     }
 
     deinit {
+        startupPreparationTask?.cancel()
+        networkMonitor.cancel()
         PHPhotoLibrary.shared().unregisterChangeObserver(self)
     }
 
@@ -122,44 +365,19 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
     }
 
     var memoryEvents: [PhotoEvent] {
-        events.filter { $0.assets.count >= 2 }
+        cachedMemoryEvents
     }
 
     var featuredMemoryEvents: [PhotoEvent] {
-        let recentCutoff = Calendar.current.date(byAdding: .month, value: -6, to: Date()) ?? .distantPast
-        let recent = memoryEvents.filter { $0.endDate >= recentCutoff }
-        return (recent.isEmpty ? memoryEvents : recent)
-            .filter { $0.assets.count >= 3 }
-            .sorted { memoryInterestScore($0) > memoryInterestScore($1) }
+        cachedFeaturedMemoryEvents
     }
 
     var todayMemoryEvents: [PhotoEvent] {
-        let calendar = Calendar.current
-        let today = Date()
-        let currentYear = calendar.component(.year, from: today)
-        return memoryEvents
-            .filter {
-                let components = calendar.dateComponents([.year, .month, .day], from: $0.startDate)
-                return components.year != currentYear
-                    && components.month == calendar.component(.month, from: today)
-                    && components.day == calendar.component(.day, from: today)
-                    && $0.assets.count >= 3
-            }
-            .sorted { $0.startDate > $1.startDate }
+        cachedTodayMemoryEvents
     }
 
     var timeCapsuleEvents: [PhotoEvent] {
-        let calendar = Calendar.current
-        let today = Date()
-        let currentMonth = calendar.component(.month, from: today)
-        let cutoff = calendar.date(byAdding: .year, value: -1, to: today) ?? .distantPast
-        return memoryEvents
-            .filter {
-                $0.endDate < cutoff
-                    && calendar.component(.month, from: $0.startDate) == currentMonth
-                    && $0.assets.count >= 3
-            }
-            .sorted { memoryInterestScore($0) > memoryInterestScore($1) }
+        cachedTimeCapsuleEvents
     }
 
     var analyzedPhotoCount: Int {
@@ -174,7 +392,6 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         guard let bestScore = semanticMatches.first?.score else { return [] }
 
         let similarityThreshold = max(Self.minimumSearchSimilarity, bestScore - Self.maximumScoreDrop)
-        let assetsByID = Dictionary(uniqueKeysWithValues: assets.map { ($0.localIdentifier, $0) })
         let irrelevantIDs = irrelevantAssetIDsByQuery[Self.normalizedQuery(query)] ?? []
         return semanticMatches
             .prefix { $0.score >= similarityThreshold }
@@ -218,74 +435,145 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         authorizationStatus = status
 
         guard status == .authorized || status == .limited else {
-            assets = []
-            events = []
+            setVisibleAssets([])
+            setEvents([])
             isPreparingSearch = false
             return
         }
 
         isPreparingSearch = true
-        searchPreparationStatus = "正在恢复照片理解数据"
-        await loadVisualAnalysisCache()
         searchPreparationStatus = "正在读取照片图库"
-        await loadAssets()
-        searchPreparationStatus = "正在载入已有搜索索引"
+        await loadAssets(rebuildCollections: false)
+        startupLibrarySnapshotMatched = eventCache.matches(Self.assetSnapshots(metadataAssets))
+        isPreparingSearch = false
+        semanticModelStatus = "正在后台恢复照片理解数据"
 
-        // Let the first screen render before loading a potentially large vector database.
-        try? await Task.sleep(for: .milliseconds(250))
-        let indexedCount = await Task.detached(priority: .utility) {
-            await SemanticEmbeddingService.shared.indexedCount
+        startupPreparationTask?.cancel()
+        startupPreparationTask = Task { [weak self] in
+            await self?.finishStartupPreparation()
+        }
+    }
+
+    private func finishStartupPreparation() async {
+        // Give the first screen and its initial thumbnails time to become interactive.
+        try? await Task.sleep(for: .milliseconds(600))
+        guard !Task.isCancelled else { return }
+
+        await loadVisualAnalysisCache()
+        guard !Task.isCancelled else { return }
+        restoreCachedVisualAnalysisState()
+        await rebuildMemoryCollections()
+        await refreshCacheUsage()
+        guard !Task.isCancelled else { return }
+
+        // Keep heavyweight model and index loading away from the first interaction window.
+        try? await Task.sleep(for: .milliseconds(1_200))
+        guard !Task.isCancelled else { return }
+
+        let semanticCounts = await Task.detached(priority: .utility) {
+            let indexed = await SemanticEmbeddingService.shared.indexedCount
+            let refined = await SemanticEmbeddingService.shared.refinedCount
+            return (indexed, refined)
         }.value
-        indexedPhotoCount = indexedCount
-        semanticModelStatus = indexedCount > 0
-            ? "已有 \(indexedCount) 张照片可搜索"
+        guard !Task.isCancelled else { return }
+        indexedPhotoCount = semanticCounts.0
+        refinedPhotoCount = semanticCounts.1
+        semanticModelStatus = semanticCounts.0 > 0
+            ? "已有 \(semanticCounts.0) 张照片可搜索"
             : "正在建立首批可搜索照片"
-        searchPreparationStatus = "正在启动照片理解引擎"
+
         await SemanticEmbeddingService.shared.prepare()
+        guard !Task.isCancelled else { return }
         semanticModelStatus = await SemanticEmbeddingService.shared.status
-        searchPreparationStatus = "正在检查新增照片"
-        await scanAllAssets(dismissPreparationAfterPlanning: true)
+        if semanticCounts.0 > 0 {
+            await refreshLightMemoryEvents()
+            guard !Task.isCancelled else { return }
+        }
+
+        if startupLibrarySnapshotMatched {
+            semanticModelStatus = semanticCounts.0 > 0
+                ? "照片图库未变化，已复用 \(semanticCounts.0) 张照片的理解数据"
+                : "照片图库未变化，等待系统后台建立搜索索引"
+            return
+        }
+
+        await scanAllAssets()
     }
 
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
         Task { @MainActor [weak self] in
-            await self?.refreshAfterLibraryChange()
+            await self?.refreshAfterLibraryChange(changeInstance)
         }
     }
 
-    func loadAssets() async {
+    func loadAssets(rebuildCollections: Bool = true) async {
         isLoading = true
-
-        let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-
-        let result = PHAsset.fetchAssets(with: .image, options: options)
-        var fetched: [PHAsset] = []
-        var excluded = 0
-        result.enumerateObjects { asset, _, _ in
-            if Self.isLikelyCameraPhoto(asset) {
-                fetched.append(asset)
-            } else {
-                excluded += 1
-            }
-        }
+        let fetchResult = Self.fetchImageAssets()
+        libraryFetchResult = fetchResult
+        let (fetched, excluded) = await Self.filterCameraAssets(from: fetchResult)
 
         metadataAssets = fetched
-        assets = fetched
+        setVisibleAssets(fetched)
         excludedAssetCount = excluded
-        let analyses = visualAnalyses
-        let collections = await Task.detached(priority: .utility) {
-            let events = Self.clusterIntoEvents(fetched, analyses: analyses)
-            return (
-                events,
-                Self.clusterTravelEvents(events.filter { $0.assets.count >= 2 })
-            )
-        }.value
-        events = collections.0
-        travelMemoryEvents = collections.1
-        resolveTravelLocationNames(for: collections.1)
-        await refreshLightMemoryEvents()
         isLoading = false
+
+        if rebuildCollections {
+            await rebuildMemoryCollections()
+        }
+    }
+
+    private func rebuildMemoryCollections() async {
+        let fetched = metadataAssets
+        let snapshots = Self.assetSnapshots(fetched)
+        if let cachedEvents = eventCache.loadEvents(matching: snapshots),
+           let restored = Self.restoreEvents(cachedEvents, assetsByID: Dictionary(
+            uniqueKeysWithValues: fetched.map { ($0.localIdentifier, $0) }
+           )) {
+            setEvents(restored)
+            await rebuildTravelMemoryEvents()
+            return
+        }
+
+        let analyses = visualAnalyses
+        let newEvents = await Task.detached(priority: .utility) {
+            Self.clusterIntoEvents(fetched, analyses: analyses)
+        }.value
+        setEvents(newEvents)
+        eventCache.replace(events: newEvents, snapshots: snapshots)
+        await rebuildTravelMemoryEvents()
+    }
+
+    private func rebuildTravelMemoryEvents() async {
+        let memoryEvents = events.filter { $0.assets.count >= 2 }
+        let travelEvents = await Task.detached(priority: .utility) {
+            Self.clusterTravelEvents(memoryEvents)
+        }.value
+        travelMemoryEvents = travelEvents
+        resolveTravelLocationNames(for: travelEvents)
+    }
+
+    nonisolated private static func fetchImageAssets() -> PHFetchResult<PHAsset> {
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        return PHAsset.fetchAssets(with: .image, options: options)
+    }
+
+    nonisolated private static func filterCameraAssets(
+        from result: PHFetchResult<PHAsset>
+    ) async -> ([PHAsset], Int) {
+        await Task.detached(priority: .userInitiated) {
+            var fetched: [PHAsset] = []
+            fetched.reserveCapacity(result.count)
+            var excluded = 0
+            result.enumerateObjects { asset, _, _ in
+                if isLikelyCameraPhoto(asset) {
+                    fetched.append(asset)
+                } else {
+                    excluded += 1
+                }
+            }
+            return (fetched, excluded)
+        }.value
     }
 
     func scanAllAssets(dismissPreparationAfterPlanning: Bool = false) async {
@@ -333,6 +621,9 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
 
         // Keep background analysis deliberately gentle so navigation stays responsive.
         let batchSize = 1
+        var completedVisualCount = 0
+        var completedSemanticCount = 0
+        var failedSemanticCount = 0
         for batchStart in stride(from: 0, to: candidates.count, by: batchSize) {
             while activePhotoBrowsers > 0 || isIndexingPaused || !canRunIndexing {
                 try? await Task.sleep(for: .milliseconds(350))
@@ -352,13 +643,13 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
                 visualAnalyses[analysis.assetID] = analysis
             }
 
-            visualScanProgress += visualBatch.count
+            completedVisualCount += visualBatch.count
             if !visualBatch.isEmpty
-                && (visualScanProgress.isMultiple(of: 400) || visualScanProgress == visualScanTotal) {
+                && (completedVisualCount.isMultiple(of: 400) || completedVisualCount == visualScanTotal) {
                 await applyVisualResults()
             }
             if !visualBatch.isEmpty
-                && (visualScanProgress.isMultiple(of: 500) || visualScanProgress == visualScanTotal) {
+                && (completedVisualCount.isMultiple(of: 500) || completedVisualCount == visualScanTotal) {
                 persistVisualAnalysisCache()
             }
 
@@ -367,10 +658,15 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
                     && visualAnalyses[$0.localIdentifier]?.isLikelyDocument != true
             }
             let semanticResults = await indexBatch(semanticBatch, quality: .thumbnail)
-            semanticIndexProgress += semanticResults.count(where: { $0 })
-            semanticIndexFailed += semanticResults.count(where: { !$0 })
-            semanticModelStatus = await SemanticEmbeddingService.shared.status
-            indexedPhotoCount = await SemanticEmbeddingService.shared.indexedCount
+            completedSemanticCount += semanticResults.count(where: { $0 })
+            failedSemanticCount += semanticResults.count(where: { !$0 })
+            if batchStart.isMultiple(of: 12) || batchEnd == candidates.count {
+                visualScanProgress = completedVisualCount
+                semanticIndexProgress = completedSemanticCount
+                semanticIndexFailed = failedSemanticCount
+                semanticModelStatus = await SemanticEmbeddingService.shared.status
+                indexedPhotoCount = await SemanticEmbeddingService.shared.indexedCount
+            }
             try? await Task.sleep(for: .milliseconds(80))
         }
 
@@ -405,6 +701,8 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             : "快速索引已可搜索，正在后台精细化"
 
         let refinementBatchSize = 1
+        var completedRefinementCount = 0
+        var failedRefinementCount = 0
         for batchStart in stride(from: 0, to: refinementCandidates.count, by: refinementBatchSize) {
             while activePhotoBrowsers > 0 || isIndexingPaused || !canRunIndexing {
                 try? await Task.sleep(for: .milliseconds(350))
@@ -412,12 +710,20 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
 
             let batchEnd = min(batchStart + refinementBatchSize, refinementCandidates.count)
             let batch = Array(refinementCandidates[batchStart..<batchEnd])
-            let results = await indexBatch(batch, quality: .refined)
-            semanticIndexProgress += results.count(where: { $0 })
-            semanticIndexFailed += results.count(where: { !$0 })
-            semanticModelStatus = await SemanticEmbeddingService.shared.status
-            indexedPhotoCount = await SemanticEmbeddingService.shared.indexedCount
-            refinedPhotoCount = await SemanticEmbeddingService.shared.refinedCount
+            let results = await indexBatch(
+                batch,
+                quality: .refined,
+                allowNetworkAccess: canDownloadICloudPhotos
+            )
+            completedRefinementCount += results.count(where: { $0 })
+            failedRefinementCount += results.count(where: { !$0 })
+            if batchStart.isMultiple(of: 12) || batchEnd == refinementCandidates.count {
+                semanticIndexProgress = completedRefinementCount
+                semanticIndexFailed = failedRefinementCount
+                semanticModelStatus = await SemanticEmbeddingService.shared.status
+                indexedPhotoCount = await SemanticEmbeddingService.shared.indexedCount
+                refinedPhotoCount = await SemanticEmbeddingService.shared.refinedCount
+            }
             try? await Task.sleep(for: .milliseconds(80))
         }
 
@@ -430,6 +736,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             ? "语义索引已同步，共 \(indexedCount) 张，精细化 \(refinedCount) 张"
             : "已覆盖 \(indexedCount) 张，\(semanticIndexFailed) 张稍后精细化"
         await refreshLightMemoryEvents()
+        await refreshCacheUsage()
         isSemanticIndexing = false
 
         if pendingLibraryRefresh {
@@ -442,6 +749,131 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
     func retryFailedIndexing() async {
         guard semanticIndexFailed > 0 else { return }
         await scanAllAssets()
+    }
+
+    func continueRefinedIndexing() async {
+        guard !isVisualScanning, !isSemanticIndexing else { return }
+        guard canDownloadICloudPhotos else {
+            semanticModelStatus = "等待连接 Wi-Fi 后继续下载 iCloud 照片"
+            return
+        }
+
+        await SemanticEmbeddingService.shared.prepare()
+        let snapshots = assets.map {
+            SemanticAssetSnapshot(
+                id: $0.localIdentifier,
+                modifiedAt: ($0.modificationDate ?? $0.creationDate)?.timeIntervalSinceReferenceDate
+            )
+        }
+        let refinementIDs = await SemanticEmbeddingService.shared.assetIDsRequiringIndex(
+            snapshots,
+            quality: .refined
+        )
+        let candidates = assets.filter { refinementIDs.contains($0.localIdentifier) }
+        guard !candidates.isEmpty else {
+            semanticModelStatus = "所有可用照片均已精细化"
+            return
+        }
+
+        semanticIndexPhase = "精细索引"
+        semanticIndexTotal = candidates.count
+        semanticIndexProgress = 0
+        semanticIndexFailed = 0
+        isSemanticIndexing = true
+        semanticModelStatus = "正在从 iCloud 继续精细化"
+        var interruptedForWiFi = false
+
+        for (offset, asset) in candidates.enumerated() {
+            while isIndexingPaused || !canRunIndexing {
+                try? await Task.sleep(for: .milliseconds(350))
+            }
+            if downloadsICloudOnWiFiOnly && !isOnWiFi {
+                semanticModelStatus = "Wi-Fi 已断开，精细索引已暂停"
+                interruptedForWiFi = true
+                break
+            }
+            let succeeded = await SemanticEmbeddingService.shared.index(
+                asset: asset,
+                quality: .refined,
+                allowNetworkAccess: true
+            )
+            if succeeded {
+                semanticIndexProgress += 1
+            } else {
+                semanticIndexFailed += 1
+            }
+            if offset.isMultiple(of: 12) || offset == candidates.count - 1 {
+                refinedPhotoCount = await SemanticEmbeddingService.shared.refinedCount
+            }
+        }
+
+        await SemanticEmbeddingService.shared.flush()
+        indexedPhotoCount = await SemanticEmbeddingService.shared.indexedCount
+        refinedPhotoCount = await SemanticEmbeddingService.shared.refinedCount
+        isSemanticIndexing = false
+        semanticModelStatus = interruptedForWiFi
+            ? "Wi-Fi 已断开，连接后可继续精细索引"
+            : semanticIndexFailed == 0
+            ? "精细索引已同步"
+            : "本次完成 \(semanticIndexProgress) 张，\(semanticIndexFailed) 张稍后重试"
+        await refreshCacheUsage()
+    }
+
+    func rebuildSemanticIndex() async {
+        guard !isVisualScanning, !isSemanticIndexing else { return }
+        isManagingCache = true
+        await SemanticEmbeddingService.shared.clearIndex()
+        indexedPhotoCount = 0
+        refinedPhotoCount = 0
+        isManagingCache = false
+        await scanAllAssets()
+        await refreshCacheUsage()
+    }
+
+    func clearCaches() async {
+        guard !isVisualScanning, !isSemanticIndexing else { return }
+        isManagingCache = true
+        await SemanticEmbeddingService.shared.clearIndex()
+        eventCache.clear()
+        visualAnalyses = [:]
+        try? FileManager.default.removeItem(at: visualAnalysisCacheURL)
+        indexedPhotoCount = 0
+        refinedPhotoCount = 0
+        visuallyExcludedAssetCount = 0
+        setVisibleAssets(metadataAssets)
+        setEvents([])
+        lightMemoryEvents = []
+        travelMemoryEvents = []
+        isManagingCache = false
+        await refreshCacheUsage()
+    }
+
+    func refreshCacheUsage() async {
+        let directory = supportDirectory
+        let interactionPath = interactionURL.path
+        cacheByteCount = await Task.detached(priority: .utility) {
+            Self.cacheUsage(in: directory, excluding: interactionPath)
+        }.value
+    }
+
+    nonisolated private static func cacheUsage(in directory: URL, excluding excludedPath: String) -> Int64 {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .fileSizeKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: Array(keys)
+        ) else {
+            return 0
+        }
+        var total: Int64 = 0
+        for case let url as URL in enumerator where url.path != excludedPath {
+            guard let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true
+            else {
+                continue
+            }
+            total += Int64(values.fileSize ?? 0)
+        }
+        return total
     }
 
     func setIndexingPaused(_ paused: Bool) {
@@ -467,6 +899,10 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
 
     private var canRunIndexing: Bool {
         isApplicationActive || isBackgroundProcessingAllowed
+    }
+
+    private var canDownloadICloudPhotos: Bool {
+        !downloadsICloudOnWiFiOnly || isOnWiFi
     }
 
     private func registerBackgroundIndexTask() {
@@ -555,11 +991,19 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         activePhotoBrowsers = max(0, activePhotoBrowsers - 1)
     }
 
-    private func indexBatch(_ assets: [PHAsset], quality: SemanticIndexQuality) async -> [Bool] {
+    private func indexBatch(
+        _ assets: [PHAsset],
+        quality: SemanticIndexQuality,
+        allowNetworkAccess: Bool = false
+    ) async -> [Bool] {
         await withTaskGroup(of: Bool.self, returning: [Bool].self) { group in
             for asset in assets {
                 group.addTask {
-                    await SemanticEmbeddingService.shared.index(asset: asset, quality: quality)
+                    await SemanticEmbeddingService.shared.index(
+                        asset: asset,
+                        quality: quality,
+                        allowNetworkAccess: allowNetworkAccess
+                    )
                 }
             }
 
@@ -572,14 +1016,88 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         }
     }
 
-    private func refreshAfterLibraryChange() async {
+    private func refreshAfterLibraryChange(_ change: PHChange) async {
         guard authorizationStatus == .authorized || authorizationStatus == .limited else { return }
+        startupPreparationTask?.cancel()
         if isVisualScanning || isSemanticIndexing {
             pendingLibraryRefresh = true
             return
         }
-        await loadAssets()
+
+        guard let libraryFetchResult,
+              let details = change.changeDetails(for: libraryFetchResult),
+              details.hasIncrementalChanges
+        else {
+            await loadAssets()
+            await scanAllAssets()
+            return
+        }
+
+        let removedAssets = details.removedObjects
+        let insertedAssets = details.insertedObjects
+        let changedAssets = details.changedObjects
+        let changedCount = removedAssets.count + insertedAssets.count + changedAssets.count
+        guard changedCount <= max(200, metadataAssets.count / 5) else {
+            self.libraryFetchResult = details.fetchResultAfterChanges
+            await loadAssets()
+            await scanAllAssets()
+            return
+        }
+
+        self.libraryFetchResult = details.fetchResultAfterChanges
+        await applyIncrementalLibraryChange(
+            removed: removedAssets,
+            inserted: insertedAssets,
+            changed: changedAssets
+        )
         await scanAllAssets()
+    }
+
+    private func applyIncrementalLibraryChange(
+        removed: [PHAsset],
+        inserted: [PHAsset],
+        changed: [PHAsset]
+    ) async {
+        let changedIDs = Set((removed + changed).map(\.localIdentifier))
+        var updatedAssets = metadataAssets.filter { !changedIDs.contains($0.localIdentifier) }
+        updatedAssets.append(contentsOf: (inserted + changed).filter(Self.isLikelyCameraPhoto))
+        updatedAssets.sort { ($0.creationDate ?? .distantPast) > ($1.creationDate ?? .distantPast) }
+
+        let affectedDates = (removed + inserted + changed).compactMap(\.creationDate)
+        metadataAssets = updatedAssets
+        excludedAssetCount = max((libraryFetchResult?.count ?? updatedAssets.count) - updatedAssets.count, 0)
+
+        let visibleAssets = updatedAssets.filter {
+            visualAnalyses[$0.localIdentifier]?.isLikelyDocument != true
+        }
+        visuallyExcludedAssetCount = updatedAssets.count - visibleAssets.count
+        setVisibleAssets(visibleAssets)
+
+        guard let earliestDate = affectedDates.min(),
+              let latestDate = affectedDates.max()
+        else {
+            await rebuildMemoryCollections()
+            return
+        }
+
+        let windowStart = earliestDate.addingTimeInterval(-24 * 60 * 60)
+        let windowEnd = latestDate.addingTimeInterval(24 * 60 * 60)
+        let windowAssets = visibleAssets.filter {
+            guard let date = $0.creationDate else { return false }
+            return date >= windowStart && date <= windowEnd
+        }
+        let analyses = visualAnalyses
+        let replacementEvents = await Task.detached(priority: .utility) {
+            Self.clusterIntoEvents(windowAssets, analyses: analyses)
+        }.value
+        let retainedEvents = events.filter {
+            $0.endDate < windowStart || $0.startDate > windowEnd
+        }
+        let mergedEvents = (retainedEvents + replacementEvents)
+            .sorted { $0.endDate > $1.endDate }
+        setEvents(mergedEvents)
+        eventCache.replace(events: mergedEvents, snapshots: Self.assetSnapshots(updatedAssets))
+        await rebuildTravelMemoryEvents()
     }
 
     private func applyVisualResults() async {
@@ -597,8 +1115,9 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             )
         }.value
         visuallyExcludedAssetCount = allAssets.count - result.assets.count
-        assets = result.assets
-        events = result.events
+        setVisibleAssets(result.assets)
+        setEvents(result.events)
+        eventCache.replace(events: result.events, snapshots: Self.assetSnapshots(allAssets))
         travelMemoryEvents = result.travelEvents
         resolveTravelLocationNames(for: result.travelEvents)
     }
@@ -639,6 +1158,80 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         }
     }
 
+    private func setEvents(_ newEvents: [PhotoEvent]) {
+        let calendar = Calendar.current
+        let today = Date()
+        let currentYear = calendar.component(.year, from: today)
+        let currentMonth = calendar.component(.month, from: today)
+        let recentCutoff = calendar.date(byAdding: .month, value: -6, to: today) ?? .distantPast
+        let capsuleCutoff = calendar.date(byAdding: .year, value: -1, to: today) ?? .distantPast
+        let memories = newEvents.filter { $0.assets.count >= 2 }
+        let recent = memories.filter { $0.endDate >= recentCutoff }
+
+        cachedMemoryEvents = memories
+        cachedFeaturedMemoryEvents = (recent.isEmpty ? memories : recent)
+            .filter { $0.assets.count >= 3 }
+            .sorted { memoryInterestScore($0) > memoryInterestScore($1) }
+        cachedTodayMemoryEvents = memories
+            .filter {
+                let components = calendar.dateComponents([.year, .month, .day], from: $0.startDate)
+                return components.year != currentYear
+                    && components.month == calendar.component(.month, from: today)
+                    && components.day == calendar.component(.day, from: today)
+                    && $0.assets.count >= 3
+            }
+            .sorted { $0.startDate > $1.startDate }
+        cachedTimeCapsuleEvents = memories
+            .filter {
+                $0.endDate < capsuleCutoff
+                    && calendar.component(.month, from: $0.startDate) == currentMonth
+                    && $0.assets.count >= 3
+            }
+            .sorted { memoryInterestScore($0) > memoryInterestScore($1) }
+        events = newEvents
+    }
+
+    private func setVisibleAssets(_ newAssets: [PHAsset]) {
+        assetsByID = Dictionary(uniqueKeysWithValues: newAssets.map { ($0.localIdentifier, $0) })
+        assets = newAssets
+    }
+
+    nonisolated private static func assetSnapshots(_ assets: [PHAsset]) -> [PhotoAssetSnapshot] {
+        assets.map {
+            PhotoAssetSnapshot(
+                id: $0.localIdentifier,
+                modifiedAt: ($0.modificationDate ?? $0.creationDate)?.timeIntervalSinceReferenceDate
+            )
+        }
+    }
+
+    nonisolated private static func restoreEvents(
+        _ cachedEvents: [CachedPhotoEvent],
+        assetsByID: [String: PHAsset]
+    ) -> [PhotoEvent]? {
+        var events: [PhotoEvent] = []
+        events.reserveCapacity(cachedEvents.count)
+        for cached in cachedEvents {
+            let assets = cached.assetIDs.compactMap { assetsByID[$0] }
+            guard assets.count == cached.assetIDs.count,
+                  let coverAsset = assetsByID[cached.coverAssetID]
+            else {
+                return nil
+            }
+            events.append(
+                PhotoEvent(
+                    id: cached.id,
+                    assets: assets,
+                    startDate: cached.startDate,
+                    endDate: cached.endDate,
+                    coverAsset: coverAsset,
+                    semanticTitle: cached.semanticTitle
+                )
+            )
+        }
+        return events.sorted { $0.endDate > $1.endDate }
+    }
+
     private func requiresVisualAnalysis(_ asset: PHAsset) -> Bool {
         guard let analysis = visualAnalyses[asset.localIdentifier] else { return true }
         return analysis.modifiedAt != VisualAnalysisService.assetModifiedAt(for: asset)
@@ -651,6 +1244,16 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             visualAnalyses.removeValue(forKey: assetID)
         }
         persistVisualAnalysisCache()
+    }
+
+    private func restoreCachedVisualAnalysisState() {
+        let validAssetIDs = Set(metadataAssets.map(\.localIdentifier))
+        reconcileVisualAnalysisCache(validAssetIDs: validAssetIDs)
+        let visibleAssets = metadataAssets.filter {
+            visualAnalyses[$0.localIdentifier]?.isLikelyDocument != true
+        }
+        visuallyExcludedAssetCount = metadataAssets.count - visibleAssets.count
+        setVisibleAssets(visibleAssets)
     }
 
     private func loadVisualAnalysisCache() async {
@@ -707,7 +1310,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
 
-    private static func isLikelyCameraPhoto(_ asset: PHAsset) -> Bool {
+    nonisolated private static func isLikelyCameraPhoto(_ asset: PHAsset) -> Bool {
         guard !asset.isHidden,
               asset.creationDate != nil,
               asset.pixelWidth >= 480,
@@ -1051,8 +1654,8 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         ("云层与天光", "云层 天光 clouds and rays of light")
     ]
 
-    private static let minimumSearchSimilarity: Float = 0.10
-    private static let maximumScoreDrop: Float = 0.035
+    private static let minimumSearchSimilarity: Float = 0.08
+    private static let maximumScoreDrop: Float = 0.055
 
     private func memoryInterestScore(_ event: PhotoEvent) -> Double {
         let ageInDays = max(0, Date().timeIntervalSince(event.endDate) / 86_400)
@@ -1067,7 +1670,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
 
 }
 
-private final class PhotoThumbnailPipeline {
+final class PhotoThumbnailPipeline {
     static let shared = PhotoThumbnailPipeline()
 
     private let manager = PHCachingImageManager()
@@ -1098,11 +1701,11 @@ private final class PhotoThumbnailPipeline {
 
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
-        options.resizeMode = normalizedCropRect == nil ? .fast : .exact
+        options.resizeMode = .fast
         if let normalizedCropRect {
             options.normalizedCropRect = normalizedCropRect
         }
-        options.isNetworkAccessAllowed = true
+        options.isNetworkAccessAllowed = false
 
         return manager.requestImage(
             for: asset,
@@ -1131,6 +1734,24 @@ private final class PhotoThumbnailPipeline {
     func cancel(_ requestID: PHImageRequestID?) {
         guard let requestID, requestID != PHInvalidImageRequestID else { return }
         manager.cancelImageRequest(requestID)
+    }
+
+    func preheat(_ assets: [PHAsset], targetSize: CGSize) {
+        guard !assets.isEmpty else { return }
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .fastFormat
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = false
+        manager.startCachingImages(
+            for: assets,
+            targetSize: targetSize,
+            contentMode: .aspectFill,
+            options: options
+        )
+    }
+
+    func stopPreheating() {
+        manager.stopCachingImagesForAllAssets()
     }
 }
 
