@@ -75,6 +75,13 @@ enum MemoryVideoGenerator {
 
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("PickPic-\(UUID().uuidString).mp4")
+        var cleanupURLs = [outputURL]
+        defer {
+            for url in cleanupURLs {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
         let input = AVAssetWriterInput(
             mediaType: .video,
@@ -208,6 +215,7 @@ enum MemoryVideoGenerator {
             duration: Double(totalFrames) / Double(frameRate),
             style: musicStyle
         )
+        cleanupURLs.append(musicURL)
         await progress(0.94, "正在合成声音与画面")
         let finalURL = try await combine(videoURL: outputURL, musicURL: musicURL)
         await progress(1, "视频已生成")
@@ -243,21 +251,16 @@ enum MemoryVideoGenerator {
     }
 
     private static func requestImage(for asset: PHAsset) async -> UIImage? {
-        await withCheckedContinuation { continuation in
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .highQualityFormat
-            options.resizeMode = .fast
-            options.isNetworkAccessAllowed = true
-            PHImageManager.default().requestImage(
-                for: asset,
-                targetSize: CGSize(width: 1440, height: 2560),
-                contentMode: .aspectFill,
-                options: options
-            ) { image, info in
-                guard (info?[PHImageResultIsDegradedKey] as? Bool) != true else { return }
-                continuation.resume(returning: image)
-            }
-        }
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = true
+        return await PhotoRequest.image(
+            for: asset,
+            targetSize: CGSize(width: 1440, height: 2560),
+            contentMode: .aspectFill,
+            options: options
+        )
     }
 
     private static func livePhotoFrames(for asset: PHAsset) async -> [CIImage] {
@@ -269,6 +272,10 @@ enum MemoryVideoGenerator {
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("PickPic-Live-\(UUID().uuidString).mov")
+        defer {
+            try? FileManager.default.removeItem(at: url)
+        }
+
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = true
         let written = await withCheckedContinuation { continuation in
@@ -281,7 +288,6 @@ enum MemoryVideoGenerator {
         let video = AVURLAsset(url: url)
         let duration = (try? await video.load(.duration).seconds) ?? 0
         guard duration > 0 else {
-            try? FileManager.default.removeItem(at: url)
             return []
         }
 
@@ -295,7 +301,6 @@ enum MemoryVideoGenerator {
                 frames.append(CIImage(cgImage: image))
             }
         }
-        try? FileManager.default.removeItem(at: url)
         return frames
     }
 

@@ -63,7 +63,8 @@ struct PhotoDetailView: View {
                         let asset = assets[index]
                         OriginalPhotoPage(
                             asset: asset,
-                            isActive: index == currentIndex
+                            isActive: index == currentIndex,
+                            shouldLoadDetailedImage: abs(index - currentIndex) <= 1
                         )
                         .containerRelativeFrame(.horizontal)
                         .id(asset.localIdentifier)
@@ -202,6 +203,7 @@ struct PhotoDetailView: View {
 private struct OriginalPhotoPage: View {
     let asset: PHAsset
     let isActive: Bool
+    let shouldLoadDetailedImage: Bool
     @State private var image: UIImage?
     @State private var isLoading = true
     @State private var loadFailed = false
@@ -240,8 +242,8 @@ private struct OriginalPhotoPage: View {
             isLoading = false
             loadFailed = preview == nil
         }
-        .task(id: "\(asset.localIdentifier)-detail-\(isActive)") {
-            guard isActive else { return }
+        .task(id: "\(asset.localIdentifier)-detail-\(shouldLoadDetailedImage)") {
+            guard shouldLoadDetailedImage else { return }
 
             try? await Task.sleep(for: .milliseconds(220))
             guard !Task.isCancelled else { return }
@@ -564,27 +566,24 @@ private enum PhotoDisplayLoader {
             return cached
         }
 
-        return await withCheckedContinuation { continuation in
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .highQualityFormat
-            options.resizeMode = .fast
-            options.version = .current
-            options.isNetworkAccessAllowed = true
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .fast
+        options.version = .current
+        options.isNetworkAccessAllowed = true
 
-            manager.requestImage(
-                for: asset,
-                targetSize: CGSize(width: longestSide, height: longestSide),
-                contentMode: .aspectFit,
-                options: options
-            ) { image, info in
-                guard (info?[PHImageResultIsDegradedKey] as? Bool) != true else { return }
-                if let image {
-                    let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
-                    cache.setObject(image, forKey: key, cost: cost)
-                }
-                continuation.resume(returning: image)
-            }
+        let image = await PhotoRequest.image(
+            manager: manager,
+            for: asset,
+            targetSize: CGSize(width: longestSide, height: longestSide),
+            contentMode: .aspectFit,
+            options: options
+        )
+        if let image {
+            let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+            cache.setObject(image, forKey: key, cost: cost)
         }
+        return image
     }
 }
 

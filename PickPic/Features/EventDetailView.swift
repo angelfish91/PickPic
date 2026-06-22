@@ -131,6 +131,8 @@ private struct LiveMemorySlideshow: View {
     @State private var isGeneratingVideo = false
     @State private var exportSucceeded = false
     @State private var errorMessage: String?
+    @State private var musicTask: Task<Void, Never>?
+    @State private var videoTask: Task<Void, Never>?
 
     private var previewAssets: [PHAsset] {
         MemoryVideoGenerator.previewAssets(from: assets)
@@ -226,7 +228,10 @@ private struct LiveMemorySlideshow: View {
             }
         }
         .onDisappear {
+            musicTask?.cancel()
+            videoTask?.cancel()
             musicPlayer?.stop()
+            musicPlayer = nil
         }
         .alert("无法导出视频", isPresented: Binding(
             get: { errorMessage != nil },
@@ -304,21 +309,16 @@ private struct LiveMemorySlideshow: View {
     }
 
     private func requestSlideshowImage(for asset: PHAsset, targetSize: CGSize) async -> UIImage? {
-        await withCheckedContinuation { continuation in
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .highQualityFormat
-            options.resizeMode = .fast
-            options.isNetworkAccessAllowed = true
-            PHImageManager.default().requestImage(
-                for: asset,
-                targetSize: targetSize,
-                contentMode: .aspectFill,
-                options: options
-            ) { image, info in
-                guard (info?[PHImageResultIsDegradedKey] as? Bool) != true else { return }
-                continuation.resume(returning: image)
-            }
-        }
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = true
+        return await PhotoRequest.image(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: .aspectFill,
+            options: options
+        )
     }
 
     private func startMusic() async {
@@ -328,6 +328,7 @@ private struct LiveMemorySlideshow: View {
             try AVAudioSession.sharedInstance().setActive(true)
             let duration = Double(previewAssets.count) * 2.4
             let url = try await MemoryVideoGenerator.previewMusic(duration: duration, style: musicStyle)
+            try Task.checkCancellation()
             let player = try AVAudioPlayer(contentsOf: url)
             player.numberOfLoops = -1
             player.volume = 1
@@ -340,16 +341,25 @@ private struct LiveMemorySlideshow: View {
 
     private func changeMusic() {
         musicStyle = musicStyle.next
+        musicTask?.cancel()
         musicPlayer?.stop()
         musicPlayer = nil
-        Task { await startMusic() }
+        musicTask = Task { await startMusic() }
     }
 
     private func generateVideo() {
+        videoTask?.cancel()
         isGeneratingVideo = true
         videoProgress = 0
         videoStatus = "正在准备"
-        Task {
+        videoTask = Task {
+            var generatedVideoURL: URL?
+            defer {
+                if let generatedVideoURL {
+                    try? FileManager.default.removeItem(at: generatedVideoURL)
+                }
+            }
+
             do {
                 let videoURL = try await MemoryVideoGenerator.generate(
                     from: assets,
@@ -358,14 +368,18 @@ private struct LiveMemorySlideshow: View {
                     videoProgress = progress
                     videoStatus = status
                 }
+                generatedVideoURL = videoURL
                 videoStatus = "正在保存到相册"
                 try await MemoryVideoGenerator.saveToPhotoLibrary(videoURL)
-                try? FileManager.default.removeItem(at: videoURL)
                 exportSucceeded = true
+            } catch is CancellationError {
+                videoStatus = ""
             } catch {
                 errorMessage = error.localizedDescription
             }
+            guard !Task.isCancelled else { return }
             isGeneratingVideo = false
+            videoTask = nil
         }
     }
 }

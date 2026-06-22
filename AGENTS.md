@@ -33,6 +33,49 @@ The app target is `PickPic` in `PickPic.xcodeproj`. The project uses Swift 5, Sw
   xcodebuild -project PickPic.xcodeproj -scheme PickPic -configuration Debug -destination 'generic/platform=iOS Simulator' build
   ```
 
+### Build And Install On A Physical iPhone
+Use this flow when the user asks to compile and install the app on their phone.
+
+1. Confirm connected devices:
+   ```sh
+   xcrun devicectl list devices
+   ```
+
+   The user's current iPhone has previously appeared as:
+   - Name: `sparrowsong iPhone 15 pro max`
+   - Identifier: `DD2C06BD-E89D-5E27-B57B-6C5FBA6865EB`
+   - Bundle ID: `com.sparrowsong.PickPic`
+
+2. Build a signed iOS device app:
+   ```sh
+   xcodebuild \
+     -project PickPic.xcodeproj \
+     -scheme PickPic \
+     -configuration Debug \
+     -destination 'generic/platform=iOS' \
+     -derivedDataPath /tmp/PickPicInstallDevice \
+     DEVELOPMENT_TEAM=HUFG324J68 \
+     CODE_SIGN_STYLE=Automatic \
+     -allowProvisioningUpdates \
+     build
+   ```
+
+3. Install and launch on the user's iPhone:
+   ```sh
+   xcrun devicectl device install app \
+     --device DD2C06BD-E89D-5E27-B57B-6C5FBA6865EB \
+     /tmp/PickPicInstallDevice/Build/Products/Debug-iphoneos/PickPic.app
+
+   xcrun devicectl device process launch \
+     --device DD2C06BD-E89D-5E27-B57B-6C5FBA6865EB \
+     com.sparrowsong.PickPic
+   ```
+
+Common install issues:
+- If mounting the developer disk image fails with `kAMDMobileImageMounterDeviceLocked`, ask the user to unlock the iPhone and keep it on the Home Screen, then rerun the install command. A rebuild is not required.
+- If launch fails with `profile has not been explicitly trusted by the user`, the app is already installed. Ask the user to trust the developer profile on the phone in `Settings > General > VPN & Device Management`, then launch the app manually or rerun the launch command.
+- Large model resources make installation slower than a normal small app; wait for `App installed:` before assuming failure.
+
 There is currently no separate test target in the project. For changes with behavioral risk, at minimum run an Xcode build. If touching photo library flows, semantic indexing, video generation, or background processing, also run manually on a simulator/device that can exercise Photos permissions.
 
 ## Model Resources

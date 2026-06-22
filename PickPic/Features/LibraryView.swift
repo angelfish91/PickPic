@@ -6,43 +6,25 @@ struct LibraryView: View {
     @State private var selectedPhoto: PhotoBrowserSelection?
     @State private var visiblePhotoCount = 50
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 3), count: 3)
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: PickPicTheme.Spacing.xs), count: 3)
     private let pageSize = 50
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .bottom) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("你的照片")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(PickPicTheme.secondaryInk)
-                        Text("图库")
-                            .font(.system(size: 40, weight: .semibold, design: .rounded))
-                    }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("\(photoLibrary.assets.count) 张照片")
-                        if photoLibrary.excludedAssetCount > 0 {
-                            Text("已过滤 \(photoLibrary.excludedAssetCount) 张非照片内容")
-                                .opacity(0.72)
-                        }
-                    }
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(PickPicTheme.secondaryInk)
-                }
-                .padding(.horizontal, 18)
+            LazyVStack(alignment: .leading, spacing: PickPicTheme.Spacing.l) {
+                libraryHeader
+                    .padding(.horizontal, PickPicTheme.Spacing.m)
 
                 if photoLibrary.isVisualScanning || photoLibrary.visualScanProgress > 0 {
                     visualScanStatus
-                        .padding(.horizontal, 18)
+                        .padding(.horizontal, PickPicTheme.Spacing.m)
                 }
 
                 if photoLibrary.assets.isEmpty {
                     PhotoPermissionState(photoLibrary: photoLibrary)
-                        .padding(.horizontal, 18)
+                        .padding(.horizontal, PickPicTheme.Spacing.m)
                 } else {
-                    LazyVGrid(columns: columns, spacing: 3) {
+                    LazyVGrid(columns: columns, spacing: PickPicTheme.Spacing.xs) {
                         ForEach(photoLibrary.assets.prefix(visiblePhotoCount), id: \.localIdentifier) { asset in
                             Button {
                                 selectedPhoto = PhotoBrowserSelection(asset: asset)
@@ -53,7 +35,7 @@ struct LibraryView: View {
                                 }
                             }
                             .buttonStyle(.plain)
-                            .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                            .clipShape(RoundedRectangle(cornerRadius: PickPicTheme.Spacing.xs, style: .continuous))
                         }
                     }
 
@@ -70,7 +52,7 @@ struct LibraryView: View {
                     }
                 }
             }
-            .padding(.top, 14)
+            .padding(.top, PickPicTheme.Spacing.m)
             .padding(.bottom, 112)
         }
         .fullScreenCover(item: $selectedPhoto) { selection in
@@ -100,33 +82,112 @@ struct LibraryView: View {
         }
     }
 
+    private var libraryHeader: some View {
+        VStack(alignment: .leading, spacing: PickPicTheme.Spacing.l) {
+            HStack(alignment: .top, spacing: PickPicTheme.Spacing.m) {
+                VStack(alignment: .leading, spacing: PickPicTheme.Spacing.xs) {
+                    Text("你的照片")
+                        .font(PickPicTheme.AppFont.caption)
+                        .foregroundStyle(PickPicTheme.secondaryInk)
+                    Text("图库")
+                        .font(PickPicTheme.AppFont.display)
+                        .foregroundStyle(PickPicTheme.ink)
+                }
+
+                Spacer(minLength: PickPicTheme.Spacing.m)
+
+                libraryPreviewStack
+            }
+
+            HStack(spacing: PickPicTheme.Spacing.s) {
+                LibraryMetricPill(value: "\(photoLibrary.assets.count)", label: "可浏览")
+                if photoLibrary.excludedAssetCount > 0 {
+                    LibraryMetricPill(value: "\(photoLibrary.excludedAssetCount)", label: "已过滤")
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(PickPicTheme.Spacing.m)
+        .background(PickPicTheme.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: PickPicTheme.Radius.xl, style: .continuous))
+        .overlay(alignment: .topTrailing) {
+            RoundedRectangle(cornerRadius: PickPicTheme.Radius.xl, style: .continuous)
+                .stroke(PickPicTheme.hairline, lineWidth: 0.7)
+        }
+    }
+
+    @ViewBuilder
+    private var libraryPreviewStack: some View {
+        if photoLibrary.assets.isEmpty {
+            ZStack {
+                Circle()
+                    .fill(PickPicTheme.accentWash.opacity(0.55))
+                Image(systemName: "photo.stack")
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(PickPicTheme.accent)
+            }
+            .frame(width: 72, height: 72)
+        } else {
+            ZStack {
+                ForEach(Array(photoLibrary.assets.prefix(3).enumerated()), id: \.element.localIdentifier) { index, asset in
+                    PhotoAssetImage(asset: asset)
+                        .frame(width: 56, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: PickPicTheme.Radius.m, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: PickPicTheme.Radius.m, style: .continuous)
+                                .stroke(.white.opacity(0.68), lineWidth: 1)
+                        }
+                        .rotationEffect(.degrees(Double(index - 1) * 7))
+                        .offset(x: CGFloat(index - 1) * 18, y: CGFloat(abs(index - 1)) * 3)
+                        .shadow(color: .black.opacity(0.12), radius: 10, y: 5)
+                }
+            }
+            .frame(width: 112, height: 82)
+        }
+    }
+
     private var visualScanStatus: some View {
-        HStack(spacing: 12) {
-            Image(systemName: photoLibrary.isVisualScanning ? "viewfinder" : "checkmark.circle.fill")
-                .font(.system(size: 19, weight: .semibold))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(photoLibrary.isVisualScanning ? "正在理解照片内容" : "视觉扫描完成")
-                    .font(.system(size: 14, weight: .semibold))
-                Text("增量分析 \(photoLibrary.visualScanProgress)/\(photoLibrary.visualScanTotal)，过滤 \(photoLibrary.visuallyExcludedAssetCount) 张文档或二维码")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(PickPicTheme.secondaryInk)
-                Text(photoLibrary.semanticModelStatus)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(PickPicTheme.secondaryInk)
+        HStack(alignment: .top, spacing: PickPicTheme.Spacing.m) {
+            ZStack {
+                Circle()
+                    .stroke(PickPicTheme.accentWash.opacity(0.55), lineWidth: 4)
+                Circle()
+                    .trim(from: 0, to: visualScanFraction)
+                    .stroke(PickPicTheme.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Image(systemName: photoLibrary.isVisualScanning ? "viewfinder" : "checkmark")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(PickPicTheme.ink)
+            }
+            .frame(width: 48, height: 48)
+
+            VStack(alignment: .leading, spacing: PickPicTheme.Spacing.s) {
+                VStack(alignment: .leading, spacing: PickPicTheme.Spacing.xs) {
+                    Text(photoLibrary.isVisualScanning ? "正在理解照片内容" : "视觉扫描完成")
+                        .font(PickPicTheme.AppFont.subheading)
+                    Text("增量分析 \(photoLibrary.visualScanProgress)/\(photoLibrary.visualScanTotal)，过滤 \(photoLibrary.visuallyExcludedAssetCount) 张文档或二维码")
+                        .font(PickPicTheme.AppFont.micro)
+                        .foregroundStyle(PickPicTheme.secondaryInk)
+                    Text(photoLibrary.semanticModelStatus)
+                        .font(PickPicTheme.AppFont.micro)
+                        .foregroundStyle(PickPicTheme.secondaryInk)
+                }
+
                 if photoLibrary.isSemanticIndexing {
                     Text("\(photoLibrary.semanticIndexPhase) \(photoLibrary.semanticIndexProgress + photoLibrary.semanticIndexFailed)/\(photoLibrary.semanticIndexTotal)")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(PickPicTheme.AppFont.micro)
                         .foregroundStyle(PickPicTheme.secondaryInk)
                     ProgressView(
                         value: Double(photoLibrary.semanticIndexProgress + photoLibrary.semanticIndexFailed),
                         total: Double(max(photoLibrary.semanticIndexTotal, 1))
                     )
-                    .tint(PickPicTheme.ink)
+                    .tint(PickPicTheme.accent)
                 } else if photoLibrary.semanticIndexFailed > 0 {
                     Button("重试 \(photoLibrary.semanticIndexFailed) 张未完成照片") {
                         Task { await photoLibrary.retryFailedIndexing() }
                     }
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(PickPicTheme.AppFont.caption)
+                    .foregroundStyle(PickPicTheme.accent)
+                    .frame(minHeight: 44, alignment: .leading)
                     .buttonStyle(.plain)
                 }
                 if photoLibrary.isVisualScanning {
@@ -134,13 +195,23 @@ struct LibraryView: View {
                         value: Double(photoLibrary.visualScanProgress),
                         total: Double(max(photoLibrary.visualScanTotal, 1))
                     )
-                    .tint(PickPicTheme.ink)
+                    .tint(PickPicTheme.accent)
                 }
             }
             Spacer()
         }
-        .padding(14)
-        .background(.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(PickPicTheme.Spacing.m)
+        .background(PickPicTheme.surface.opacity(0.62), in: RoundedRectangle(cornerRadius: PickPicTheme.Radius.l, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: PickPicTheme.Radius.l, style: .continuous)
+                .stroke(PickPicTheme.hairline, lineWidth: 0.7)
+        }
+    }
+
+    private var visualScanFraction: CGFloat {
+        guard photoLibrary.visualScanTotal > 0 else { return photoLibrary.isVisualScanning ? 0.08 : 1 }
+        let fraction = CGFloat(photoLibrary.visualScanProgress) / CGFloat(photoLibrary.visualScanTotal)
+        return min(max(fraction, 0), 1)
     }
 }
 
@@ -148,20 +219,60 @@ struct PhotoPermissionState: View {
     @ObservedObject var photoLibrary: PhotoLibraryStore
 
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: photoLibrary.isLoading ? "hourglass" : "photo.on.rectangle.angled")
-                .font(.system(size: 38, weight: .light))
-            Text(photoLibrary.isLoading ? "正在读取照片" : "允许访问照片后，这里会显示你的图库")
-                .font(.system(size: 17, weight: .semibold))
-                .multilineTextAlignment(.center)
+        VStack(spacing: PickPicTheme.Spacing.m) {
+            ZStack {
+                Circle()
+                    .fill(PickPicTheme.accentWash.opacity(0.55))
+                Image(systemName: photoLibrary.isLoading ? "hourglass" : "photo.on.rectangle.angled")
+                    .font(.system(size: 34, weight: .light))
+            }
+            .frame(width: 88, height: 88)
+
+            VStack(spacing: PickPicTheme.Spacing.xs) {
+                Text(photoLibrary.isLoading ? "正在读取照片" : "允许访问照片")
+                    .font(PickPicTheme.AppFont.heading)
+                Text(photoLibrary.isLoading ? "PickPic 正在准备你的本机照片索引" : "这里会显示可浏览、可搜索、已过滤后的照片图库")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(PickPicTheme.secondaryInk)
+                    .multilineTextAlignment(.center)
+            }
+
             Button("请求照片权限") {
                 Task { await photoLibrary.start() }
             }
-            .buttonStyle(.borderedProminent)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(minWidth: 144, minHeight: 44)
+            .background(PickPicTheme.ink, in: Capsule())
+            .buttonStyle(.plain)
         }
-        .foregroundStyle(PickPicTheme.secondaryInk)
+        .foregroundStyle(PickPicTheme.ink)
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
-        .background(.white.opacity(0.38), in: RoundedRectangle(cornerRadius: 25, style: .continuous))
+        .padding(.horizontal, PickPicTheme.Spacing.l)
+        .padding(.vertical, 56)
+        .background(PickPicTheme.surface.opacity(0.58), in: RoundedRectangle(cornerRadius: PickPicTheme.Radius.xl, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: PickPicTheme.Radius.xl, style: .continuous)
+                .stroke(PickPicTheme.hairline, lineWidth: 0.7)
+        }
+    }
+}
+
+private struct LibraryMetricPill: View {
+    let value: String
+    let label: String
+
+    var body: some View {
+        HStack(spacing: PickPicTheme.Spacing.xs) {
+            Text(value)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(PickPicTheme.ink)
+            Text(label)
+                .font(PickPicTheme.AppFont.micro)
+                .foregroundStyle(PickPicTheme.secondaryInk)
+        }
+        .padding(.horizontal, PickPicTheme.Spacing.s)
+        .frame(minHeight: 32)
+        .background(PickPicTheme.surfaceRaised.opacity(0.72), in: Capsule())
     }
 }
