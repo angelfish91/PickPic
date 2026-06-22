@@ -33,6 +33,12 @@ The app target is `PickPic` in `PickPic.xcodeproj`. The project uses Swift 5, Sw
   xcodebuild -project PickPic.xcodeproj -scheme PickPic -configuration Debug -destination 'generic/platform=iOS Simulator' build
   ```
 
+### Default Delivery Workflow
+- After completing code or project-file changes, run the relevant verification command first. At minimum, use the CLI simulator build above unless the change is documentation-only.
+- Stage, commit, and push completed changes promptly after verification. Prefer a concise commit message that describes the user-facing or engineering outcome.
+- If the worktree contains unrelated user changes, inspect `git status --short` and the relevant diff before staging; only include unrelated files when the user explicitly asks to commit all current changes.
+- When the user's iPhone is connected and listed as available by `xcrun devicectl list devices`, install and launch the updated app on that phone after a successful app build. Documentation-only changes do not need a phone install.
+
 ### Build And Install On A Physical iPhone
 Use this flow when the user asks to compile and install the app on their phone.
 
