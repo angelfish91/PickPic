@@ -316,7 +316,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
     private let networkMonitor = NWPathMonitor()
     private var irrelevantAssetIDsByQuery: [String: Set<String>] = [:]
     private var feedbackEvents: [PhotoFeedbackEvent] = []
-    private let visualAnalysisCacheVersion = 1
+    private let visualAnalysisCacheVersion = 2
     private var activePhotoBrowsers = 0
     private var isApplicationActive = true
     private var isBackgroundProcessingAllowed = false
@@ -388,17 +388,45 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         _ query: String,
         progress: (@Sendable (SemanticSearchProgress) async -> Void)? = nil
     ) async -> [SemanticSearchResult] {
-        let semanticMatches = await SemanticEmbeddingService.shared.search(query, progress: progress)
-        guard let bestScore = semanticMatches.first?.score else { return [] }
-
-        let similarityThreshold = max(Self.minimumSearchSimilarity, bestScore - Self.maximumScoreDrop)
+        async let semanticTask = SemanticEmbeddingService.shared.search(query, progress: progress)
+        async let detailTask = HybridSearchIndex.shared.search(query)
+        let semanticMatches = await semanticTask
+        let detailMatches = await detailTask
         let irrelevantIDs = irrelevantAssetIDsByQuery[Self.normalizedQuery(query)] ?? []
-        return semanticMatches
-            .prefix { $0.score >= similarityThreshold }
-            .filter { !irrelevantIDs.contains($0.assetID) }
-            .compactMap { match in
-                guard let asset = assetsByID[match.assetID] else { return nil }
-                return SemanticSearchResult(asset: asset, score: match.score, reason: "语义相似")
+
+        var fusedScores: [String: (score: Float, semantic: Bool, detail: Bool)] = [:]
+        if let bestScore = semanticMatches.first?.score {
+            let similarityThreshold = max(Self.minimumSearchSimilarity, bestScore - Self.maximumScoreDrop)
+            let semanticRange = max(bestScore - similarityThreshold, 0.001)
+            for match in semanticMatches.prefix(while: { $0.score >= similarityThreshold }) {
+                guard !irrelevantIDs.contains(match.assetID) else { continue }
+                let normalizedScore = min(max((match.score - similarityThreshold) / semanticRange, 0), 1)
+                fusedScores[match.assetID] = (
+                    score: 0.25 + normalizedScore * 0.72,
+                    semantic: true,
+                    detail: false
+                )
+            }
+        }
+
+        for match in detailMatches where !irrelevantIDs.contains(match.assetID) {
+            let existing = fusedScores[match.assetID]
+            let detailScore = match.score * 0.42
+            fusedScores[match.assetID] = (
+                score: (existing?.score ?? 0) + detailScore + (existing == nil ? 0 : 0.18),
+                semantic: existing?.semantic ?? false,
+                detail: true
+            )
+        }
+
+        return fusedScores
+            .sorted { $0.value.score > $1.value.score }
+            .compactMap { assetID, fused in
+                guard let asset = assetsByID[assetID] else { return nil }
+                let reason = fused.semantic && fused.detail
+                    ? "混合匹配"
+                    : fused.detail ? "细节匹配" : "语义相似"
+                return SemanticSearchResult(asset: asset, score: fused.score, reason: reason)
             }
     }
 
@@ -462,6 +490,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         await loadVisualAnalysisCache()
         guard !Task.isCancelled else { return }
         restoreCachedVisualAnalysisState()
+        await rebuildHybridSearchIndex()
         await rebuildMemoryCollections()
         await refreshCacheUsage()
         guard !Task.isCancelled else { return }
@@ -588,6 +617,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         let validAssetIDs = Set(metadataAssets.map(\.localIdentifier))
         reconcileVisualAnalysisCache(validAssetIDs: validAssetIDs)
         _ = await SemanticEmbeddingService.shared.reconcile(validAssetIDs: validAssetIDs)
+        await HybridSearchIndex.shared.reconcile(validAssetIDs: validAssetIDs)
         let visualCandidates = metadataAssets.filter(requiresVisualAnalysis)
         let visualCandidateIDs = Set(visualCandidates.map(\.localIdentifier))
         let snapshots = metadataAssets.map {
@@ -642,6 +672,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             for analysis in results {
                 visualAnalyses[analysis.assetID] = analysis
             }
+            await updateHybridSearchIndex(with: results)
 
             completedVisualCount += visualBatch.count
             if !visualBatch.isEmpty
@@ -674,7 +705,9 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             visualAnalyses[asset.localIdentifier]?.isLikelyDocument == true ? nil : asset.localIdentifier
         })
         _ = await SemanticEmbeddingService.shared.reconcile(validAssetIDs: visibleIDs)
+        await HybridSearchIndex.shared.reconcile(validAssetIDs: visibleIDs)
         await SemanticEmbeddingService.shared.flush()
+        await HybridSearchIndex.shared.flush()
         persistVisualAnalysisCache()
         await applyVisualResults()
         await refreshLightMemoryEvents()
@@ -834,6 +867,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         guard !isVisualScanning, !isSemanticIndexing else { return }
         isManagingCache = true
         await SemanticEmbeddingService.shared.clearIndex()
+        await HybridSearchIndex.shared.clear()
         eventCache.clear()
         visualAnalyses = [:]
         try? FileManager.default.removeItem(at: visualAnalysisCacheURL)
@@ -1205,6 +1239,110 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         }
     }
 
+    nonisolated private static func hybridSearchDocument(
+        for asset: PHAsset,
+        analysis: PhotoVisualAnalysis
+    ) -> HybridSearchDocument {
+        let sortedLabels = analysis.classifications
+            .filter { $0.value >= 0.08 }
+            .sorted { $0.value > $1.value }
+            .map(\.key)
+        let visualTerms = sortedLabels.flatMap { label in
+            [label] + hybridAliases(for: label)
+        }
+        let peopleTerms = hybridPeopleTerms(faceCount: analysis.faceCount, labels: sortedLabels)
+        let contextTerms = hybridContextTerms(for: asset, analysis: analysis)
+
+        return HybridSearchDocument(
+            assetID: asset.localIdentifier,
+            modifiedAt: VisualAnalysisService.assetModifiedAt(for: asset),
+            visualText: Self.uniqueJoined(visualTerms),
+            ocrText: Self.uniqueJoined(analysis.recognizedTexts),
+            peopleText: Self.uniqueJoined(peopleTerms),
+            contextText: Self.uniqueJoined(contextTerms)
+        )
+    }
+
+    nonisolated private static func hybridAliases(for label: String) -> [String] {
+        let normalized = label.lowercased()
+        let mappings: [(needles: [String], aliases: [String])] = [
+            (["person", "people", "portrait", "face"], ["人", "人物", "人脸", "肖像", "合照"]),
+            (["selfie"], ["自拍", "人脸", "肖像"]),
+            (["child", "baby", "toddler", "kid"], ["小孩", "孩子", "宝宝", "儿童"]),
+            (["dog"], ["狗", "宠物", "动物"]),
+            (["cat"], ["猫", "宠物", "动物"]),
+            (["animal", "pet"], ["动物", "宠物"]),
+            (["food", "dish", "meal"], ["食物", "美食", "吃饭", "餐桌"]),
+            (["restaurant"], ["餐厅", "吃饭", "聚餐"]),
+            (["coffee"], ["咖啡", "饮料"]),
+            (["cake", "dessert"], ["蛋糕", "甜点", "生日"]),
+            (["drink", "beverage"], ["饮料", "喝的"]),
+            (["beach", "ocean", "sea", "coast"], ["海边", "海", "沙滩"]),
+            (["lake", "river", "water"], ["水", "湖", "河"]),
+            (["mountain"], ["山", "爬山"]),
+            (["forest", "tree"], ["森林", "树", "自然"]),
+            (["flower", "plant"], ["花", "植物", "自然"]),
+            (["sky", "cloud"], ["天空", "云"]),
+            (["sunset", "sunrise"], ["日落", "日出", "晚霞", "朝霞"]),
+            (["city", "street", "building", "traffic"], ["城市", "街道", "建筑", "交通"]),
+            (["night"], ["夜晚", "夜景"]),
+            (["document", "text"], ["文档", "文字"]),
+            (["menu"], ["菜单", "餐厅"]),
+            (["poster"], ["海报"]),
+            (["screenshot", "web site"], ["截图", "网页"])
+        ]
+
+        return mappings
+            .filter { mapping in mapping.needles.contains { normalized.contains($0) } }
+            .flatMap(\.aliases)
+    }
+
+    nonisolated private static func hybridPeopleTerms(faceCount: Int, labels: [String]) -> [String] {
+        var terms: [String] = []
+        if faceCount > 0 {
+            terms.append(contentsOf: ["face", "person", "portrait", "人", "人脸", "肖像"])
+        }
+        if faceCount >= 2 {
+            terms.append(contentsOf: ["people", "group", "friends", "合照", "朋友", "多人"])
+        }
+        if labels.contains(where: { $0.contains("selfie") }) {
+            terms.append(contentsOf: ["selfie", "自拍"])
+        }
+        return terms
+    }
+
+    nonisolated private static func hybridContextTerms(
+        for asset: PHAsset,
+        analysis: PhotoVisualAnalysis
+    ) -> [String] {
+        var terms: [String] = []
+        if analysis.textBlockCount > 0 {
+            terms.append(contentsOf: ["text", "文字"])
+        }
+        if analysis.textBlockCount >= 3 || analysis.textAreaRatio >= 0.16 {
+            terms.append(contentsOf: ["text heavy", "document", "文档", "文字多"])
+        }
+        if analysis.containsBarcode {
+            terms.append(contentsOf: ["barcode", "qr", "二维码", "条码"])
+        }
+        if asset.location != nil {
+            terms.append(contentsOf: ["location", "place", "地点"])
+        }
+        return terms
+    }
+
+    nonisolated private static func uniqueJoined(_ values: [String]) -> String {
+        var seen: Set<String> = []
+        return values
+            .map {
+                $0.lowercased()
+                    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+            .joined(separator: " ")
+    }
+
     nonisolated private static func restoreEvents(
         _ cachedEvents: [CachedPhotoEvent],
         assetsByID: [String: PHAsset]
@@ -1235,6 +1373,43 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
     private func requiresVisualAnalysis(_ asset: PHAsset) -> Bool {
         guard let analysis = visualAnalyses[asset.localIdentifier] else { return true }
         return analysis.modifiedAt != VisualAnalysisService.assetModifiedAt(for: asset)
+    }
+
+    private func rebuildHybridSearchIndex() async {
+        let documents = metadataAssets.compactMap { asset -> HybridSearchDocument? in
+            guard let analysis = visualAnalyses[asset.localIdentifier],
+                  !analysis.isLikelyDocument
+            else {
+                return nil
+            }
+            return Self.hybridSearchDocument(for: asset, analysis: analysis)
+        }
+        let validAssetIDs = Set(assets.map(\.localIdentifier))
+        await HybridSearchIndex.shared.reconcile(validAssetIDs: validAssetIDs)
+        await HybridSearchIndex.shared.upsert(documents)
+        await HybridSearchIndex.shared.flush()
+    }
+
+    private func updateHybridSearchIndex(with analyses: [PhotoVisualAnalysis]) async {
+        guard !analyses.isEmpty else { return }
+        let assetsByIdentifier = Dictionary(uniqueKeysWithValues: metadataAssets.map { ($0.localIdentifier, $0) })
+        var deletedAssetIDs: Set<String> = []
+        var documents: [HybridSearchDocument] = []
+
+        for analysis in analyses {
+            guard let asset = assetsByIdentifier[analysis.assetID] else {
+                deletedAssetIDs.insert(analysis.assetID)
+                continue
+            }
+            if analysis.isLikelyDocument {
+                deletedAssetIDs.insert(analysis.assetID)
+            } else {
+                documents.append(Self.hybridSearchDocument(for: asset, analysis: analysis))
+            }
+        }
+
+        await HybridSearchIndex.shared.delete(assetIDs: deletedAssetIDs)
+        await HybridSearchIndex.shared.upsert(documents)
     }
 
     private func reconcileVisualAnalysisCache(validAssetIDs: Set<String>) {

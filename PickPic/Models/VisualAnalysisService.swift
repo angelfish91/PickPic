@@ -7,7 +7,9 @@ struct PhotoVisualAnalysis: Codable {
     let modifiedAt: TimeInterval?
     let textAreaRatio: CGFloat
     let textBlockCount: Int
+    let recognizedTexts: [String]
     let containsBarcode: Bool
+    let faceCount: Int
     let classifications: [String: Float]
     let featurePrint: VNFeaturePrintObservation?
     private let featurePrintData: Data?
@@ -17,7 +19,9 @@ struct PhotoVisualAnalysis: Codable {
         modifiedAt: TimeInterval?,
         textAreaRatio: CGFloat,
         textBlockCount: Int,
+        recognizedTexts: [String],
         containsBarcode: Bool,
+        faceCount: Int,
         featurePrint: VNFeaturePrintObservation?,
         classifications: [String: Float]
     ) {
@@ -25,7 +29,9 @@ struct PhotoVisualAnalysis: Codable {
         self.modifiedAt = modifiedAt
         self.textAreaRatio = textAreaRatio
         self.textBlockCount = textBlockCount
+        self.recognizedTexts = recognizedTexts
         self.containsBarcode = containsBarcode
+        self.faceCount = faceCount
         self.classifications = classifications
         self.featurePrint = featurePrint
         featurePrintData = featurePrint.flatMap {
@@ -53,7 +59,9 @@ struct PhotoVisualAnalysis: Codable {
         case modifiedAt
         case textAreaRatio
         case textBlockCount
+        case recognizedTexts
         case containsBarcode
+        case faceCount
         case featurePrintData
         case classifications
     }
@@ -64,7 +72,9 @@ struct PhotoVisualAnalysis: Codable {
         modifiedAt = try container.decodeIfPresent(TimeInterval.self, forKey: .modifiedAt)
         textAreaRatio = try container.decode(CGFloat.self, forKey: .textAreaRatio)
         textBlockCount = try container.decode(Int.self, forKey: .textBlockCount)
+        recognizedTexts = try container.decodeIfPresent([String].self, forKey: .recognizedTexts) ?? []
         containsBarcode = try container.decode(Bool.self, forKey: .containsBarcode)
+        faceCount = try container.decodeIfPresent(Int.self, forKey: .faceCount) ?? 0
         classifications = try container.decode([String: Float].self, forKey: .classifications)
         featurePrintData = try container.decodeIfPresent(Data.self, forKey: .featurePrintData)
         featurePrint = featurePrintData.flatMap {
@@ -78,7 +88,9 @@ struct PhotoVisualAnalysis: Codable {
         try container.encodeIfPresent(modifiedAt, forKey: .modifiedAt)
         try container.encode(textAreaRatio, forKey: .textAreaRatio)
         try container.encode(textBlockCount, forKey: .textBlockCount)
+        try container.encode(recognizedTexts, forKey: .recognizedTexts)
         try container.encode(containsBarcode, forKey: .containsBarcode)
+        try container.encode(faceCount, forKey: .faceCount)
         try container.encodeIfPresent(featurePrintData, forKey: .featurePrintData)
         try container.encode(classifications, forKey: .classifications)
     }
@@ -100,12 +112,13 @@ enum VisualAnalysisService {
             textRequest.minimumTextHeight = 0.025
 
             let barcodeRequest = VNDetectBarcodesRequest()
+            let faceRequest = VNDetectFaceLandmarksRequest()
             let featureRequest = VNGenerateImageFeaturePrintRequest()
             let classificationRequest = VNClassifyImageRequest()
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
 
             do {
-                try handler.perform([textRequest, barcodeRequest, featureRequest, classificationRequest])
+                try handler.perform([textRequest, barcodeRequest, faceRequest, featureRequest, classificationRequest])
             } catch {
                 return nil
             }
@@ -114,6 +127,11 @@ enum VisualAnalysisService {
             let textArea = textObservations.reduce(CGFloat.zero) { partial, observation in
                 partial + observation.boundingBox.width * observation.boundingBox.height
             }
+            let recognizedTexts = textObservations.compactMap { observation in
+                observation.topCandidates(1).first?.string
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .filter { !$0.isEmpty }
             let classifications = Dictionary(
                 uniqueKeysWithValues: (classificationRequest.results ?? [])
                     .filter { $0.confidence >= 0.08 }
@@ -126,7 +144,9 @@ enum VisualAnalysisService {
                 modifiedAt: assetModifiedAt(for: asset),
                 textAreaRatio: min(textArea, 1),
                 textBlockCount: textObservations.count,
+                recognizedTexts: recognizedTexts,
                 containsBarcode: !(barcodeRequest.results ?? []).isEmpty,
+                faceCount: faceRequest.results?.count ?? 0,
                 featurePrint: featureRequest.results?.first,
                 classifications: classifications
             )
