@@ -5,28 +5,27 @@ struct ProfileView: View {
     @State private var clearPreferencesConfirmation = false
     @State private var clearCacheConfirmation = false
     @State private var rebuildIndexConfirmation = false
-    @State private var selectedInsight: Insight?
+    @State private var showsOrganizationDetails = false
 
-    private enum Insight: String, Identifiable {
+    private enum Insight {
+        case searchable
+        case pending
         case refined
         case memories
         case analyzed
         case filtered
-
-        var id: String { rawValue }
     }
 
-    private var totalPhotoCount: Int {
-        photoLibrary.assets.count + photoLibrary.visuallyExcludedAssetCount
+    private var searchablePhotoCount: Int {
+        min(photoLibrary.indexedPhotoCount, photoLibrary.assets.count)
     }
 
-    private var understoodCount: Int {
-        min(photoLibrary.indexedPhotoCount, totalPhotoCount)
+    private var pendingPhotoCount: Int {
+        max(photoLibrary.assets.count - searchablePhotoCount, 0)
     }
 
-    private var understandingProgress: Double {
-        guard totalPhotoCount > 0 else { return 0 }
-        return Double(understoodCount) / Double(totalPhotoCount)
+    private var isOrganizing: Bool {
+        photoLibrary.isVisualScanning || photoLibrary.isSemanticIndexing
     }
 
     var body: some View {
@@ -34,15 +33,15 @@ struct ProfileView: View {
             LazyVStack(alignment: .leading, spacing: 22) {
                 header
                 understandingCard
-                insightGrid
-                indexingSection
-                storageSection
                 preferencesSection
                 privacyAndAboutSection
             }
             .padding(.horizontal, 18)
             .padding(.top, 14)
             .padding(.bottom, 112)
+        }
+        .sheet(isPresented: $showsOrganizationDetails) {
+            organizationDetails
         }
         .confirmationDialog(
             "清除搜索偏好？",
@@ -80,12 +79,6 @@ struct ProfileView: View {
         } message: {
             Text("会清除当前语义索引并重新构建。视觉分析与回忆整理结果会保留。")
         }
-        .sheet(item: $selectedInsight) { insight in
-            insightExplanation(insight)
-                .presentationDetents([.height(270)])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(PickPicTheme.canvas)
-        }
     }
 
     private var header: some View {
@@ -99,34 +92,119 @@ struct ProfileView: View {
     }
 
     private var understandingCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top) {
+        Button {
+            showsOrganizationDetails = true
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .fill(PickPicTheme.accentWash.opacity(0.72))
+                    Image(systemName: organizationIcon)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(PickPicTheme.ink)
+                        .symbolEffect(.pulse, isActive: isOrganizing && !photoLibrary.isIndexingPaused)
+                }
+                .frame(width: 46, height: 46)
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text(indexingTitle)
-                        .font(.system(size: 21, weight: .semibold, design: .rounded))
-                    Text(photoLibrary.semanticModelStatus)
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    Text(organizationSummary)
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.68))
+                        .foregroundStyle(PickPicTheme.secondaryInk)
+                        .lineLimit(2)
                 }
                 Spacer()
-                Image(systemName: photoLibrary.isIndexingPaused ? "pause.fill" : "sparkles")
-                    .font(.system(size: 20, weight: .semibold))
-                    .symbolEffect(.pulse, isActive: photoLibrary.isSemanticIndexing && !photoLibrary.isIndexingPaused)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(PickPicTheme.secondaryInk.opacity(0.55))
             }
+            .padding(16)
+            .background(.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(PickPicTheme.hairline, lineWidth: 0.7)
+            }
+        }
+        .buttonStyle(.plain)
+    }
 
-            VStack(alignment: .leading, spacing: 7) {
-                HStack {
-                    Text("\(understoodCount) / \(totalPhotoCount) 张可搜索")
-                    Spacer()
-                    Text(understandingProgress, format: .percent.precision(.fractionLength(0)))
+    private var organizationDetails: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 22) {
+                    detailStatusCard
+                    insightGrid
+                    activitySection
+                    indexingSection
+                    storageSection
                 }
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.78))
-
-                ProgressView(value: understandingProgress)
-                    .tint(.white)
+                .padding(18)
+                .padding(.bottom, 24)
             }
+            .background(PickPicTheme.canvas.ignoresSafeArea())
+            .navigationTitle("照片整理详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        showsOrganizationDetails = false
+                    }
+                }
+            }
+        }
+        .presentationBackground(PickPicTheme.canvas)
+    }
 
+    private var detailStatusCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: organizationIcon)
+                    .font(.system(size: 18, weight: .semibold))
+                Text(indexingTitle)
+                    .font(.system(size: 21, weight: .semibold, design: .rounded))
+                Spacer()
+            }
+            Text(organizationSummary)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.72))
+            Text("截图、文档和二维码等内容被收起后，不会计入搜索索引的待完成数量。")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.58))
+        }
+        .foregroundStyle(.white)
+        .padding(20)
+        .background(PickPicTheme.ink, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+    }
+
+    private var activitySection: some View {
+        settingsSection(title: "当前活动") {
+            if photoLibrary.isVisualScanning {
+                activityRow(
+                    icon: "viewfinder",
+                    title: "正在检查照片内容",
+                    detail: "\(photoLibrary.visualScanProgress) / \(photoLibrary.visualScanTotal) 项",
+                    value: Double(photoLibrary.visualScanProgress),
+                    total: Double(max(photoLibrary.visualScanTotal, 1))
+                )
+            }
+            if photoLibrary.isSemanticIndexing {
+                activityRow(
+                    icon: "sparkles",
+                    title: photoLibrary.semanticIndexPhase,
+                    detail: "\(photoLibrary.semanticIndexProgress + photoLibrary.semanticIndexFailed) / \(photoLibrary.semanticIndexTotal) 张",
+                    value: Double(photoLibrary.semanticIndexProgress + photoLibrary.semanticIndexFailed),
+                    total: Double(max(photoLibrary.semanticIndexTotal, 1))
+                )
+            }
+            if !isOrganizing {
+                settingLabel(
+                    icon: "checkmark.circle.fill",
+                    title: "当前没有整理任务",
+                    subtitle: photoLibrary.semanticModelStatus
+                )
+            }
+            Divider().opacity(0.35)
             Button {
                 photoLibrary.setIndexingPaused(!photoLibrary.isIndexingPaused)
             } label: {
@@ -136,26 +214,38 @@ struct ProfileView: View {
                 )
                 .font(.system(size: 13, weight: .semibold))
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 11)
-                .background(.white.opacity(0.14), in: Capsule())
+                .padding(.vertical, 10)
+                .background(PickPicTheme.accentWash.opacity(0.65), in: Capsule())
             }
             .buttonStyle(.plain)
         }
-        .foregroundStyle(.white)
-        .padding(20)
-        .background(
-            LinearGradient(
-                colors: [PickPicTheme.ink, PickPicTheme.ink.opacity(0.78)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 28, style: .continuous)
-        )
-        .shadow(color: .black.opacity(0.16), radius: 24, y: 12)
+    }
+
+    private func activityRow(
+        icon: String,
+        title: String,
+        detail: String,
+        value: Double,
+        total: Double
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Label(title, systemImage: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Text(detail)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(PickPicTheme.secondaryInk)
+            }
+            ProgressView(value: value, total: total)
+                .tint(PickPicTheme.ink)
+        }
     }
 
     private var insightGrid: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 2), spacing: 10) {
+            insightCard(.searchable)
+            insightCard(.pending)
             insightCard(.refined)
             insightCard(.memories)
             insightCard(.analyzed)
@@ -164,74 +254,39 @@ struct ProfileView: View {
     }
 
     private func insightCard(_ insight: Insight) -> some View {
-        Button {
-            selectedInsight = insight
-        } label: {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Image(systemName: insightIcon(insight))
-                        .font(.system(size: 18, weight: .semibold))
-                    Spacer()
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 12, weight: .semibold))
-                        .opacity(0.55)
-                }
+        VStack(alignment: .leading, spacing: 10) {
+            Image(systemName: insightIcon(insight))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(PickPicTheme.secondaryInk)
-                Text(insightValue(insight))
-                    .font(.system(size: 27, weight: .semibold, design: .rounded))
-                Text(insightTitle(insight))
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(PickPicTheme.secondaryInk)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func insightExplanation(_ insight: Insight) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                Image(systemName: insightIcon(insight))
-                    .font(.system(size: 20, weight: .semibold))
-                    .frame(width: 42, height: 42)
-                    .background(.white.opacity(0.55), in: Circle())
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(insightTitle(insight))
-                        .font(.system(size: 17, weight: .semibold, design: .rounded))
-                    Text(insightValue(insight))
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(PickPicTheme.secondaryInk)
-                }
-            }
-
+            Text(insightValue(insight))
+                .font(.system(size: 27, weight: .semibold, design: .rounded))
+            Text(insightTitle(insight))
+                .font(.system(size: 12, weight: .semibold))
             Text(insightDescription(insight))
-                .font(.system(size: 14, weight: .medium))
-                .lineSpacing(3)
-
-            Text(insightRule(insight))
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(PickPicTheme.secondaryInk)
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.white.opacity(0.48), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .lineLimit(3)
         }
-        .padding(22)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .padding(16)
+        .background(.white.opacity(0.42), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private func insightTitle(_ insight: Insight) -> String {
         switch insight {
+        case .searchable: "可搜索照片"
+        case .pending: "待整理照片"
         case .refined: "精细索引"
         case .memories: "回忆片段"
         case .analyzed: "已分析内容"
-        case .filtered: "已过滤内容"
+        case .filtered: "已收起内容"
         }
     }
 
     private func insightValue(_ insight: Insight) -> String {
         switch insight {
+        case .searchable: "\(searchablePhotoCount)"
+        case .pending: "\(pendingPhotoCount)"
         case .refined: "\(photoLibrary.refinedPhotoCount)"
         case .memories: "\(photoLibrary.memoryEvents.count)"
         case .analyzed: "\(photoLibrary.analyzedPhotoCount)"
@@ -241,6 +296,8 @@ struct ProfileView: View {
 
     private func insightIcon(_ insight: Insight) -> String {
         switch insight {
+        case .searchable: "magnifyingglass"
+        case .pending: "clock"
         case .refined: "wand.and.stars"
         case .memories: "rectangle.stack.fill"
         case .analyzed: "viewfinder"
@@ -250,6 +307,10 @@ struct ProfileView: View {
 
     private func insightDescription(_ insight: Insight) -> String {
         switch insight {
+        case .searchable:
+            "已完成快速索引、现在可以参与语义搜索的普通照片。"
+        case .pending:
+            "尚未完成快速索引的普通照片，不包含已经收起的内容。"
         case .refined:
             "使用更高质量图片生成语义索引的照片数量。它们仍属于可搜索照片，但搜索匹配会更准确。"
         case .memories:
@@ -257,20 +318,7 @@ struct ProfileView: View {
         case .analyzed:
             "已完成视觉内容检查的照片数量，用于识别文档、二维码等内容，并辅助整理回忆。"
         case .filtered:
-            "视觉检查后被识别为文档、截图、二维码等非普通照片内容的数量。"
-        }
-    }
-
-    private func insightRule(_ insight: Insight) -> String {
-        switch insight {
-        case .refined:
-            "统计口径：已完成高质量语义索引，不包含仅完成快速索引的照片。"
-        case .memories:
-            "统计口径：时间相近的照片聚为一组，每组至少包含 2 张未过滤照片。"
-        case .analyzed:
-            "统计口径：视觉分析缓存中存在有效结果的照片。"
-        case .filtered:
-            "统计口径：已分析内容中，被判定为文档、截图、二维码等的照片。"
+            "视觉检查后被识别为文档、截图、二维码等内容并从图库中收起的数量。"
         }
     }
 
@@ -457,7 +505,7 @@ struct ProfileView: View {
     }
 
     private var refinedIndexSubtitle: String {
-        let remaining = max(totalPhotoCount - photoLibrary.refinedPhotoCount, 0)
+        let remaining = max(photoLibrary.assets.count - photoLibrary.refinedPhotoCount, 0)
         if photoLibrary.downloadsICloudOnWiFiOnly && !photoLibrary.isOnWiFi {
             return "约 \(remaining) 张待处理，连接 Wi-Fi 后可继续"
         }
@@ -466,5 +514,20 @@ struct ProfileView: View {
 
     private var formattedCacheSize: String {
         ByteCountFormatter.string(fromByteCount: photoLibrary.cacheByteCount, countStyle: .file)
+    }
+
+    private var organizationIcon: String {
+        if photoLibrary.isIndexingPaused { return "pause.fill" }
+        return isOrganizing ? "sparkles" : "checkmark"
+    }
+
+    private var organizationSummary: String {
+        if photoLibrary.isVisualScanning {
+            return "已检查 \(photoLibrary.visualScanProgress) / \(photoLibrary.visualScanTotal) 项 · 已收起 \(photoLibrary.visuallyExcludedAssetCount) 项"
+        }
+        if photoLibrary.isSemanticIndexing {
+            return "已整理 \(photoLibrary.semanticIndexProgress + photoLibrary.semanticIndexFailed) / \(photoLibrary.semanticIndexTotal) 张 · 现有结果可搜索"
+        }
+        return "\(searchablePhotoCount) 张可搜索 · \(photoLibrary.visuallyExcludedAssetCount) 项已收起"
     }
 }

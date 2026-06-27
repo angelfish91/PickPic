@@ -15,11 +15,6 @@ struct LibraryView: View {
                 libraryHeader
                     .padding(.horizontal, PickPicTheme.Spacing.m)
 
-                if photoLibrary.isVisualScanning || photoLibrary.visualScanProgress > 0 {
-                    visualScanStatus
-                        .padding(.horizontal, PickPicTheme.Spacing.m)
-                }
-
                 if photoLibrary.assets.isEmpty {
                     PhotoPermissionState(photoLibrary: photoLibrary)
                         .padding(.horizontal, PickPicTheme.Spacing.m)
@@ -102,7 +97,7 @@ struct LibraryView: View {
             HStack(spacing: PickPicTheme.Spacing.s) {
                 LibraryMetricPill(value: "\(photoLibrary.assets.count)", label: "可浏览")
                 if photoLibrary.excludedAssetCount > 0 {
-                    LibraryMetricPill(value: "\(photoLibrary.excludedAssetCount)", label: "已过滤")
+                    LibraryMetricPill(value: "\(photoLibrary.excludedAssetCount)", label: "已收起")
                 }
                 Spacer(minLength: 0)
             }
@@ -145,74 +140,6 @@ struct LibraryView: View {
         }
     }
 
-    private var visualScanStatus: some View {
-        HStack(alignment: .top, spacing: PickPicTheme.Spacing.m) {
-            ZStack {
-                Circle()
-                    .stroke(PickPicTheme.accentWash.opacity(0.55), lineWidth: 4)
-                Circle()
-                    .trim(from: 0, to: visualScanFraction)
-                    .stroke(PickPicTheme.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                Image(systemName: photoLibrary.isVisualScanning ? "viewfinder" : "checkmark")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(PickPicTheme.ink)
-            }
-            .frame(width: 48, height: 48)
-
-            VStack(alignment: .leading, spacing: PickPicTheme.Spacing.s) {
-                VStack(alignment: .leading, spacing: PickPicTheme.Spacing.xs) {
-                    Text(photoLibrary.isVisualScanning ? "正在理解照片内容" : "视觉扫描完成")
-                        .font(PickPicTheme.AppFont.subheading)
-                    Text("增量分析 \(photoLibrary.visualScanProgress)/\(photoLibrary.visualScanTotal)，过滤 \(photoLibrary.visuallyExcludedAssetCount) 张文档或二维码")
-                        .font(PickPicTheme.AppFont.micro)
-                        .foregroundStyle(PickPicTheme.secondaryInk)
-                    Text(photoLibrary.semanticModelStatus)
-                        .font(PickPicTheme.AppFont.micro)
-                        .foregroundStyle(PickPicTheme.secondaryInk)
-                }
-
-                if photoLibrary.isSemanticIndexing {
-                    Text("\(photoLibrary.semanticIndexPhase) \(photoLibrary.semanticIndexProgress + photoLibrary.semanticIndexFailed)/\(photoLibrary.semanticIndexTotal)")
-                        .font(PickPicTheme.AppFont.micro)
-                        .foregroundStyle(PickPicTheme.secondaryInk)
-                    ProgressView(
-                        value: Double(photoLibrary.semanticIndexProgress + photoLibrary.semanticIndexFailed),
-                        total: Double(max(photoLibrary.semanticIndexTotal, 1))
-                    )
-                    .tint(PickPicTheme.accent)
-                } else if photoLibrary.semanticIndexFailed > 0 {
-                    Button("重试 \(photoLibrary.semanticIndexFailed) 张未完成照片") {
-                        Task { await photoLibrary.retryFailedIndexing() }
-                    }
-                    .font(PickPicTheme.AppFont.caption)
-                    .foregroundStyle(PickPicTheme.accent)
-                    .frame(minHeight: 44, alignment: .leading)
-                    .buttonStyle(.plain)
-                }
-                if photoLibrary.isVisualScanning {
-                    ProgressView(
-                        value: Double(photoLibrary.visualScanProgress),
-                        total: Double(max(photoLibrary.visualScanTotal, 1))
-                    )
-                    .tint(PickPicTheme.accent)
-                }
-            }
-            Spacer()
-        }
-        .padding(PickPicTheme.Spacing.m)
-        .background(PickPicTheme.surface.opacity(0.62), in: RoundedRectangle(cornerRadius: PickPicTheme.Radius.l, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: PickPicTheme.Radius.l, style: .continuous)
-                .stroke(PickPicTheme.hairline, lineWidth: 0.7)
-        }
-    }
-
-    private var visualScanFraction: CGFloat {
-        guard photoLibrary.visualScanTotal > 0 else { return photoLibrary.isVisualScanning ? 0.08 : 1 }
-        let fraction = CGFloat(photoLibrary.visualScanProgress) / CGFloat(photoLibrary.visualScanTotal)
-        return min(max(fraction, 0), 1)
-    }
 }
 
 struct PhotoPermissionState: View {
