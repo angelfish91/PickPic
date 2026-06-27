@@ -208,6 +208,7 @@ private struct OriginalPhotoPage: View {
     @State private var isLoading = true
     @State private var loadFailed = false
     @State private var livePhotoZoomRequest: PhotoZoomRequest?
+    @State private var isPhotoZoomed = false
 
     var body: some View {
         Group {
@@ -215,9 +216,10 @@ private struct OriginalPhotoPage: View {
                 ZStack {
                     ZoomablePhotoView(
                         image: image,
-                        externalZoomRequest: livePhotoZoomRequest
+                        externalZoomRequest: livePhotoZoomRequest,
+                        onZoomChange: { isPhotoZoomed = $0 }
                     )
-                    if asset.mediaSubtypes.contains(.photoLive), isActive {
+                    if asset.mediaSubtypes.contains(.photoLive), isActive, !isPhotoZoomed {
                         InlineLivePhotoView(asset: asset) { normalizedPoint in
                             livePhotoZoomRequest = PhotoZoomRequest(
                                 id: UUID(),
@@ -272,9 +274,10 @@ private struct PhotoZoomRequest: Equatable {
 private struct ZoomablePhotoView: UIViewRepresentable {
     let image: UIImage
     let externalZoomRequest: PhotoZoomRequest?
+    let onZoomChange: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(onZoomChange: onZoomChange)
     }
 
     func makeUIView(context: Context) -> ZoomScrollView {
@@ -307,6 +310,7 @@ private struct ZoomablePhotoView: UIViewRepresentable {
     }
 
     func updateUIView(_ scrollView: ZoomScrollView, context: Context) {
+        context.coordinator.onZoomChange = onZoomChange
         let imageView = context.coordinator.imageView
         if imageView.image !== image {
             imageView.image = image
@@ -331,13 +335,27 @@ private struct ZoomablePhotoView: UIViewRepresentable {
         let imageView = UIImageView()
         weak var scrollView: UIScrollView?
         var lastExternalZoomRequestID: UUID?
+        var onZoomChange: (Bool) -> Void
+        private var lastReportedZoomState = false
+
+        init(onZoomChange: @escaping (Bool) -> Void) {
+            self.onZoomChange = onZoomChange
+        }
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? {
             imageView
         }
 
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
-            scrollView.panGestureRecognizer.isEnabled = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
+            let isZoomed = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
+            scrollView.panGestureRecognizer.isEnabled = isZoomed
+            if isZoomed != lastReportedZoomState {
+                lastReportedZoomState = isZoomed
+                let onZoomChange = onZoomChange
+                DispatchQueue.main.async {
+                    onZoomChange(isZoomed)
+                }
+            }
             centerImage()
         }
 
