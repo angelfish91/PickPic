@@ -317,6 +317,7 @@ private struct ZoomablePhotoView: UIViewRepresentable {
         if imageView.image !== image {
             imageView.image = image
             scrollView.setZoomScale(1, animated: false)
+            context.coordinator.reportZoomState(false)
         }
         if scrollView.zoomScale <= scrollView.minimumZoomScale + 0.01 {
             imageView.frame = scrollView.bounds
@@ -353,14 +354,27 @@ private struct ZoomablePhotoView: UIViewRepresentable {
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             let isZoomed = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
             scrollView.panGestureRecognizer.isEnabled = isZoomed
-            if isZoomed != lastReportedZoomState {
-                lastReportedZoomState = isZoomed
-                let onZoomChange = onZoomChange
-                DispatchQueue.main.async {
-                    onZoomChange(isZoomed)
-                }
+            if isZoomed {
+                reportZoomState(true)
             }
             centerImage()
+        }
+
+        func scrollViewDidEndZooming(
+            _ scrollView: UIScrollView,
+            with view: UIView?,
+            atScale scale: CGFloat
+        ) {
+            reportZoomState(scale > scrollView.minimumZoomScale + 0.01)
+        }
+
+        func reportZoomState(_ isZoomed: Bool) {
+            guard isZoomed != lastReportedZoomState else { return }
+            lastReportedZoomState = isZoomed
+            let onZoomChange = onZoomChange
+            DispatchQueue.main.async {
+                onZoomChange(isZoomed)
+            }
         }
 
         func centerImage() {
@@ -384,6 +398,12 @@ private struct ZoomablePhotoView: UIViewRepresentable {
             guard let scrollView else { return }
             if scrollView.zoomScale > scrollView.minimumZoomScale + 0.1 {
                 scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak scrollView] in
+                    guard let self, let scrollView,
+                          scrollView.zoomScale <= scrollView.minimumZoomScale + 0.01
+                    else { return }
+                    self.reportZoomState(false)
+                }
                 return
             }
 
