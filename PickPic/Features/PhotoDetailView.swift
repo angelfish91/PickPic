@@ -219,13 +219,15 @@ private struct OriginalPhotoPage: View {
                         externalZoomRequest: livePhotoZoomRequest,
                         onZoomChange: { isPhotoZoomed = $0 }
                     )
-                    if asset.mediaSubtypes.contains(.photoLive), isActive, !isPhotoZoomed {
+                    if asset.mediaSubtypes.contains(.photoLive), isActive {
                         InlineLivePhotoView(asset: asset) { normalizedPoint in
                             livePhotoZoomRequest = PhotoZoomRequest(
                                 id: UUID(),
                                 normalizedPoint: normalizedPoint
                             )
                         }
+                        .opacity(isPhotoZoomed ? 0 : 1)
+                        .allowsHitTesting(!isPhotoZoomed)
                     }
                 }
             } else if isLoading {
@@ -316,8 +318,10 @@ private struct ZoomablePhotoView: UIViewRepresentable {
             imageView.image = image
             scrollView.setZoomScale(1, animated: false)
         }
-        imageView.frame = scrollView.bounds
-        scrollView.contentSize = scrollView.bounds.size
+        if scrollView.zoomScale <= scrollView.minimumZoomScale + 0.01 {
+            imageView.frame = scrollView.bounds
+            scrollView.contentSize = scrollView.bounds.size
+        }
         context.coordinator.centerImage()
 
         if let externalZoomRequest,
