@@ -20,6 +20,7 @@ struct LivePhotoBadge: View {
 
 struct InlineLivePhotoView: UIViewRepresentable {
     let asset: PHAsset
+    let onDoubleTap: (CGPoint) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -37,13 +38,25 @@ struct InlineLivePhotoView: UIViewRepresentable {
         longPress.cancelsTouchesInView = false
         longPress.delegate = context.coordinator
         view.addGestureRecognizer(longPress)
+
+        let doubleTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleDoubleTap(_:))
+        )
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.cancelsTouchesInView = false
+        doubleTap.delegate = context.coordinator
+        view.addGestureRecognizer(doubleTap)
+
         context.coordinator.view = view
         context.coordinator.assetID = asset.localIdentifier
+        context.coordinator.onDoubleTap = onDoubleTap
         requestLivePhoto(for: view, coordinator: context.coordinator)
         return view
     }
 
     func updateUIView(_ view: PHLivePhotoView, context: Context) {
+        context.coordinator.onDoubleTap = onDoubleTap
         if context.coordinator.assetID != asset.localIdentifier {
             context.coordinator.assetID = asset.localIdentifier
             view.livePhoto = nil
@@ -81,6 +94,7 @@ struct InlineLivePhotoView: UIViewRepresentable {
         weak var view: PHLivePhotoView?
         var requestID = PHInvalidImageRequestID
         var assetID = ""
+        var onDoubleTap: ((CGPoint) -> Void)?
 
         @objc func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
             guard let view, view.livePhoto != nil else { return }
@@ -92,6 +106,17 @@ struct InlineLivePhotoView: UIViewRepresentable {
             default:
                 break
             }
+        }
+
+        @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
+            guard let view, view.bounds.width > 0, view.bounds.height > 0 else { return }
+            let point = gesture.location(in: view)
+            onDoubleTap?(
+                CGPoint(
+                    x: min(max(point.x / view.bounds.width, 0), 1),
+                    y: min(max(point.y / view.bounds.height, 0), 1)
+                )
+            )
         }
 
         func gestureRecognizer(

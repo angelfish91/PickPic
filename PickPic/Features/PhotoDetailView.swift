@@ -207,14 +207,23 @@ private struct OriginalPhotoPage: View {
     @State private var image: UIImage?
     @State private var isLoading = true
     @State private var loadFailed = false
+    @State private var livePhotoZoomRequest: PhotoZoomRequest?
 
     var body: some View {
         Group {
             if let image {
                 ZStack {
-                    ZoomablePhotoView(image: image)
+                    ZoomablePhotoView(
+                        image: image,
+                        externalZoomRequest: livePhotoZoomRequest
+                    )
                     if asset.mediaSubtypes.contains(.photoLive), isActive {
-                        InlineLivePhotoView(asset: asset)
+                        InlineLivePhotoView(asset: asset) { normalizedPoint in
+                            livePhotoZoomRequest = PhotoZoomRequest(
+                                id: UUID(),
+                                normalizedPoint: normalizedPoint
+                            )
+                        }
                     }
                 }
             } else if isLoading {
@@ -255,8 +264,14 @@ private struct OriginalPhotoPage: View {
     }
 }
 
+private struct PhotoZoomRequest: Equatable {
+    let id: UUID
+    let normalizedPoint: CGPoint
+}
+
 private struct ZoomablePhotoView: UIViewRepresentable {
     let image: UIImage
+    let externalZoomRequest: PhotoZoomRequest?
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -300,11 +315,22 @@ private struct ZoomablePhotoView: UIViewRepresentable {
         imageView.frame = scrollView.bounds
         scrollView.contentSize = scrollView.bounds.size
         context.coordinator.centerImage()
+
+        if let externalZoomRequest,
+           context.coordinator.lastExternalZoomRequestID != externalZoomRequest.id {
+            context.coordinator.lastExternalZoomRequestID = externalZoomRequest.id
+            let point = CGPoint(
+                x: externalZoomRequest.normalizedPoint.x * scrollView.bounds.width,
+                y: externalZoomRequest.normalizedPoint.y * scrollView.bounds.height
+            )
+            context.coordinator.toggleZoom(at: point)
+        }
     }
 
     final class Coordinator: NSObject, UIScrollViewDelegate {
         let imageView = UIImageView()
         weak var scrollView: UIScrollView?
+        var lastExternalZoomRequestID: UUID?
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? {
             imageView
@@ -329,13 +355,17 @@ private struct ZoomablePhotoView: UIViewRepresentable {
 
         @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
             guard let scrollView else { return }
+            toggleZoom(at: gesture.location(in: imageView))
+        }
+
+        func toggleZoom(at point: CGPoint) {
+            guard let scrollView else { return }
             if scrollView.zoomScale > scrollView.minimumZoomScale + 0.1 {
                 scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
                 return
             }
 
             let targetScale: CGFloat = 2.5
-            let point = gesture.location(in: imageView)
             let width = scrollView.bounds.width / targetScale
             let height = scrollView.bounds.height / targetScale
             let zoomRect = CGRect(
