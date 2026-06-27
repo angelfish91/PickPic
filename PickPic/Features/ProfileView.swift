@@ -191,9 +191,11 @@ struct ProfileView: View {
             if photoLibrary.isSemanticIndexing {
                 activityRow(
                     icon: "sparkles",
-                    title: photoLibrary.semanticIndexPhase,
-                    detail: "\(photoLibrary.semanticIndexProgress + photoLibrary.semanticIndexFailed) / \(photoLibrary.semanticIndexTotal) 张",
-                    value: Double(photoLibrary.semanticIndexProgress + photoLibrary.semanticIndexFailed),
+                    title: photoLibrary.semanticIndexPhase == "快速索引"
+                        ? "整理可搜索照片"
+                        : photoLibrary.semanticIndexPhase,
+                    detail: "\(photoLibrary.semanticIndexProcessedCount) / \(photoLibrary.semanticIndexTotal) 张",
+                    value: Double(photoLibrary.semanticIndexProcessedCount),
                     total: Double(max(photoLibrary.semanticIndexTotal, 1))
                 )
             }
@@ -526,7 +528,7 @@ struct ProfileView: View {
             return "已检查 \(photoLibrary.visualScanProgress) / \(photoLibrary.visualScanTotal) 项 · 已收起 \(photoLibrary.visuallyExcludedAssetCount) 项"
         }
         if photoLibrary.isSemanticIndexing {
-            return "已整理 \(photoLibrary.semanticIndexProgress + photoLibrary.semanticIndexFailed) / \(photoLibrary.semanticIndexTotal) 张 · 现有结果可搜索"
+            return "已整理 \(photoLibrary.semanticIndexProcessedCount) / \(photoLibrary.semanticIndexTotal) 张 · 现有结果可搜索"
         }
         return "\(searchablePhotoCount) 张可搜索 · \(photoLibrary.visuallyExcludedAssetCount) 项已收起"
     }

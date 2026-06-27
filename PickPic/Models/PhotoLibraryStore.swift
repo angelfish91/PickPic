@@ -287,6 +287,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
     @Published private(set) var semanticIndexProgress = 0
     @Published private(set) var semanticIndexTotal = 0
     @Published private(set) var semanticIndexFailed = 0
+    @Published private(set) var semanticIndexSkipped = 0
     @Published private(set) var isSemanticIndexing = false
     @Published private(set) var semanticIndexPhase = "快速索引"
     @Published private(set) var indexedPhotoCount = 0
@@ -382,6 +383,13 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
 
     var analyzedPhotoCount: Int {
         visualAnalyses.count
+    }
+
+    var semanticIndexProcessedCount: Int {
+        min(
+            semanticIndexProgress + semanticIndexFailed + semanticIndexSkipped,
+            semanticIndexTotal
+        )
     }
 
     func search(
@@ -626,16 +634,17 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             snapshots,
             quality: .thumbnail
         )
-        let pendingIndexCount = semanticCandidateIDs.count(where: {
+        let eligibleSemanticCandidateIDs = semanticCandidateIDs.filter {
             visualAnalyses[$0]?.isLikelyDocument != true
-        })
+        }
         let candidates = metadataAssets.filter {
             visualCandidateIDs.contains($0.localIdentifier)
                 || semanticCandidateIDs.contains($0.localIdentifier)
         }
-        semanticIndexTotal = pendingIndexCount
+        semanticIndexTotal = eligibleSemanticCandidateIDs.count
         semanticIndexProgress = 0
         semanticIndexFailed = 0
+        semanticIndexSkipped = 0
         semanticIndexPhase = "快速索引"
         isSemanticIndexing = semanticIndexTotal > 0
         visualScanTotal = visualCandidates.count
@@ -647,6 +656,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         var completedVisualCount = 0
         var completedSemanticCount = 0
         var failedSemanticCount = 0
+        var skippedSemanticCount = 0
         for batchStart in stride(from: 0, to: candidates.count, by: batchSize) {
             while activePhotoBrowsers > 0 || isIndexingPaused || !canRunIndexing {
                 try? await Task.sleep(for: .milliseconds(350))
@@ -677,10 +687,13 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
                 persistVisualAnalysisCache()
             }
 
-            let semanticBatch = batch.filter {
-                semanticCandidateIDs.contains($0.localIdentifier)
-                    && visualAnalyses[$0.localIdentifier]?.isLikelyDocument != true
+            let semanticCandidateBatch = batch.filter {
+                eligibleSemanticCandidateIDs.contains($0.localIdentifier)
             }
+            let semanticBatch = semanticCandidateBatch.filter {
+                visualAnalyses[$0.localIdentifier]?.isLikelyDocument != true
+            }
+            skippedSemanticCount += semanticCandidateBatch.count - semanticBatch.count
             let semanticResults = await indexBatch(semanticBatch, quality: .thumbnail)
             completedSemanticCount += semanticResults.count(where: { $0 })
             failedSemanticCount += semanticResults.count(where: { !$0 })
@@ -688,6 +701,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
                 visualScanProgress = completedVisualCount
                 semanticIndexProgress = completedSemanticCount
                 semanticIndexFailed = failedSemanticCount
+                semanticIndexSkipped = skippedSemanticCount
                 semanticModelStatus = await SemanticEmbeddingService.shared.status
                 indexedPhotoCount = await SemanticEmbeddingService.shared.indexedCount
             }
@@ -721,6 +735,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         semanticIndexTotal = refinementCandidates.count
         semanticIndexProgress = 0
         semanticIndexFailed = 0
+        semanticIndexSkipped = 0
         isSemanticIndexing = !refinementCandidates.isEmpty
         semanticModelStatus = refinementCandidates.isEmpty
             ? "所有语义索引均已精细化"
@@ -805,6 +820,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         semanticIndexTotal = candidates.count
         semanticIndexProgress = 0
         semanticIndexFailed = 0
+        semanticIndexSkipped = 0
         isSemanticIndexing = true
         semanticModelStatus = "正在从 iCloud 继续精细化"
         var interruptedForWiFi = false
