@@ -42,18 +42,21 @@ struct RootView: View {
                 }
             }
 
-            ZStack {
-                RoundedRectangle(cornerRadius: 29, style: .continuous)
-                    .fill(.clear)
-                    .contentShape(RoundedRectangle(cornerRadius: 29, style: .continuous))
-                    .onTapGesture {}
+            if !photoLibrary.isPreparingInitialMemories {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 29, style: .continuous)
+                        .fill(.clear)
+                        .contentShape(RoundedRectangle(cornerRadius: 29, style: .continuous))
+                        .onTapGesture {}
 
-                AdaptiveDock(selectedTab: $selectedTab, onSearch: { searchPresented = true })
+                    AdaptiveDock(selectedTab: $selectedTab, onSearch: { searchPresented = true })
+                }
+                    .frame(height: PickPicTheme.dockHeight)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+                    .transition(.opacity)
+                    .zIndex(100)
             }
-                .frame(height: PickPicTheme.dockHeight)
-                .padding(.horizontal, 14)
-                .padding(.bottom, 8)
-                .zIndex(100)
 
             LaunchPreparationOverlay(photoLibrary: photoLibrary)
                 .zIndex(200)
