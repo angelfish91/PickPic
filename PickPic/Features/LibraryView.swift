@@ -65,11 +65,15 @@ struct LibraryView: View {
             PhotoThumbnailPipeline.shared.stopPreheating()
         }
         .task(id: visiblePhotoCount) {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+
             let start = min(
-                max(visiblePhotoCount - pageSize, 0),
+                visiblePhotoCount == pageSize ? 30 : visiblePhotoCount,
                 photoLibrary.assets.count
             )
-            let end = min(start + pageSize * 3, photoLibrary.assets.count)
+            let preheatCount = visiblePhotoCount == pageSize ? 60 : pageSize * 2
+            let end = min(start + preheatCount, photoLibrary.assets.count)
             guard start < end else { return }
             PhotoThumbnailPipeline.shared.preheatLibraryGrid(
                 Array(photoLibrary.assets[start..<end])

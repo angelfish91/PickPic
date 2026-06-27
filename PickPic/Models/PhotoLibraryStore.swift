@@ -1884,7 +1884,6 @@ final class PhotoThumbnailPipeline {
         for asset: PHAsset,
         targetSize: CGSize,
         contentMode: PHImageContentMode,
-        normalizedCropRect: CGRect?,
         key: String,
         completion: @escaping (UIImage) -> Void
     ) -> PHImageRequestID {
@@ -1896,10 +1895,7 @@ final class PhotoThumbnailPipeline {
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.resizeMode = .fast
-        if let normalizedCropRect {
-            options.normalizedCropRect = normalizedCropRect
-        }
-        options.isNetworkAccessAllowed = false
+        options.isNetworkAccessAllowed = true
 
         return manager.requestImage(
             for: asset,
@@ -2007,7 +2003,6 @@ struct PhotoAssetImage: View {
             for: asset,
             targetSize: targetSize,
             contentMode: contentMode == .fill ? .aspectFill : .aspectFit,
-            normalizedCropRect: normalizedCropRect(for: size),
             key: key
         ) { requestedImage in
             image = requestedImage
@@ -2021,27 +2016,6 @@ struct PhotoAssetImage: View {
         return CGSize(width: width, height: height)
     }
 
-    private func normalizedCropRect(for size: CGSize) -> CGRect? {
-        guard contentMode == .fill,
-              asset.pixelWidth > 0,
-              asset.pixelHeight > 0,
-              size.width > 0,
-              size.height > 0
-        else {
-            return nil
-        }
-
-        let sourceAspectRatio = CGFloat(asset.pixelWidth) / CGFloat(asset.pixelHeight)
-        let targetAspectRatio = size.width / size.height
-
-        if sourceAspectRatio > targetAspectRatio {
-            let cropWidth = targetAspectRatio / sourceAspectRatio
-            return CGRect(x: (1 - cropWidth) / 2, y: 0, width: cropWidth, height: 1)
-        }
-
-        let cropHeight = sourceAspectRatio / targetAspectRatio
-        return CGRect(x: 0, y: (1 - cropHeight) / 2, width: 1, height: cropHeight)
-    }
 }
 
 struct SquarePhotoAssetImage: View {
