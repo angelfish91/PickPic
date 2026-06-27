@@ -498,6 +498,7 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         launchPreparationStatus = "正在准备回忆"
         await rebuildMemoryCollections()
         guard !Task.isCancelled else { return }
+        PhotoThumbnailPipeline.shared.preheatLibraryGrid(Array(assets.prefix(30)))
         isPreparingInitialMemories = false
         await refreshCacheUsage()
         guard !Task.isCancelled else { return }
@@ -1940,6 +1941,16 @@ final class PhotoThumbnailPipeline {
             targetSize: targetSize,
             contentMode: .aspectFill,
             options: options
+        )
+    }
+
+    func preheatLibraryGrid(_ assets: [PHAsset]) {
+        let scale = UIScreen.main.scale
+        let pointSide = UIScreen.main.bounds.width / 3
+        let pixelSide = max(ceil(pointSide * scale / 64) * 64, 256)
+        preheat(
+            assets,
+            targetSize: CGSize(width: pixelSide, height: pixelSide)
         )
     }
 
