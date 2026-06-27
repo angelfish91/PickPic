@@ -42,11 +42,21 @@ struct RootView: View {
                 }
             }
 
-            AdaptiveDock(selectedTab: $selectedTab, onSearch: { searchPresented = true })
+            ZStack {
+                RoundedRectangle(cornerRadius: 29, style: .continuous)
+                    .fill(.clear)
+                    .contentShape(RoundedRectangle(cornerRadius: 29, style: .continuous))
+                    .onTapGesture {}
+
+                AdaptiveDock(selectedTab: $selectedTab, onSearch: { searchPresented = true })
+            }
+                .frame(height: PickPicTheme.dockHeight)
                 .padding(.horizontal, 14)
                 .padding(.bottom, 8)
+                .zIndex(100)
 
             LaunchPreparationOverlay(photoLibrary: photoLibrary)
+                .zIndex(200)
         }
         .animation(.easeOut(duration: 0.35), value: photoLibrary.isPreparingInitialMemories)
         .tint(PickPicTheme.ink)

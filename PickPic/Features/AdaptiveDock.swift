@@ -111,6 +111,8 @@ struct AdaptiveDock: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(LiquidGlassPressStyle())
+        .contentShape(Rectangle())
+        .accessibilityLabel(tab.rawValue)
     }
 
     private func searchButton(usesNativeGlass: Bool) -> some View {
