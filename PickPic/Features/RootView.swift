@@ -23,7 +23,7 @@ enum AppTab: String, CaseIterable {
 }
 
 struct RootView: View {
-    let photoLibrary: PhotoLibraryStore
+    @ObservedObject var photoLibrary: PhotoLibraryStore
     @State private var selectedTab: AppTab = .memories
     @State private var searchPresented = false
 
@@ -58,7 +58,10 @@ struct RootView: View {
                     .zIndex(100)
             }
 
-            LaunchPreparationOverlay(photoLibrary: photoLibrary)
+            LaunchPreparationOverlay(
+                isPresented: photoLibrary.isPreparingInitialMemories,
+                status: photoLibrary.launchPreparationStatus
+            )
                 .zIndex(200)
         }
         .animation(.easeOut(duration: 0.35), value: photoLibrary.isPreparingInitialMemories)
@@ -72,11 +75,12 @@ struct RootView: View {
 }
 
 private struct LaunchPreparationOverlay: View {
-    @ObservedObject var photoLibrary: PhotoLibraryStore
+    let isPresented: Bool
+    let status: String
 
     var body: some View {
-        if photoLibrary.isPreparingInitialMemories {
-            LaunchPreparationView(status: photoLibrary.launchPreparationStatus)
+        if isPresented {
+            LaunchPreparationView(status: status)
                 .transition(.opacity)
                 .zIndex(10)
         }
