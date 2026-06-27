@@ -48,6 +48,7 @@ struct RootView: View {
 
             LaunchPreparationOverlay(photoLibrary: photoLibrary)
         }
+        .animation(.easeOut(duration: 0.35), value: photoLibrary.isPreparingInitialMemories)
         .tint(PickPicTheme.ink)
         .sheet(isPresented: $searchPresented) {
             SearchView(photoLibrary: photoLibrary)
@@ -61,8 +62,8 @@ private struct LaunchPreparationOverlay: View {
     @ObservedObject var photoLibrary: PhotoLibraryStore
 
     var body: some View {
-        if photoLibrary.isPreparingSearch {
-            LaunchPreparationView(status: photoLibrary.searchPreparationStatus)
+        if photoLibrary.isPreparingInitialMemories {
+            LaunchPreparationView(status: photoLibrary.launchPreparationStatus)
                 .transition(.opacity)
                 .zIndex(10)
         }

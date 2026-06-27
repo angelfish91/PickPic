@@ -292,8 +292,8 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
     @Published private(set) var indexedPhotoCount = 0
     @Published private(set) var refinedPhotoCount = 0
     @Published private(set) var isIndexingPaused = false
-    @Published private(set) var isPreparingSearch = true
-    @Published private(set) var searchPreparationStatus = "正在准备照片搜索"
+    @Published private(set) var isPreparingInitialMemories = true
+    @Published private(set) var launchPreparationStatus = "正在准备你的回忆"
     @Published private(set) var authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @Published private(set) var isLoading = false
     @Published private(set) var favoriteAssetIDs: Set<String> = []
@@ -465,15 +465,14 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         guard status == .authorized || status == .limited else {
             setVisibleAssets([])
             setEvents([])
-            isPreparingSearch = false
+            isPreparingInitialMemories = false
             return
         }
 
-        isPreparingSearch = true
-        searchPreparationStatus = "正在读取照片图库"
+        isPreparingInitialMemories = true
+        launchPreparationStatus = "正在读取你的照片"
         await loadAssets(rebuildCollections: false)
         startupLibrarySnapshotMatched = eventCache.matches(Self.assetSnapshots(metadataAssets))
-        isPreparingSearch = false
         semanticModelStatus = "正在后台恢复照片理解数据"
 
         startupPreparationTask?.cancel()
@@ -483,15 +482,15 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
     }
 
     private func finishStartupPreparation() async {
-        // Give the first screen and its initial thumbnails time to become interactive.
-        try? await Task.sleep(for: .milliseconds(600))
-        guard !Task.isCancelled else { return }
-
+        launchPreparationStatus = "正在整理照片中的故事"
         await loadVisualAnalysisCache()
         guard !Task.isCancelled else { return }
         restoreCachedVisualAnalysisState()
         await rebuildHybridSearchIndex()
+        launchPreparationStatus = "正在准备回忆"
         await rebuildMemoryCollections()
+        guard !Task.isCancelled else { return }
+        isPreparingInitialMemories = false
         await refreshCacheUsage()
         guard !Task.isCancelled else { return }
 
@@ -605,12 +604,9 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         }.value
     }
 
-    func scanAllAssets(dismissPreparationAfterPlanning: Bool = false) async {
+    func scanAllAssets() async {
         guard !isVisualScanning, !isSemanticIndexing else {
             pendingLibraryRefresh = true
-            if dismissPreparationAfterPlanning {
-                isPreparingSearch = false
-            }
             return
         }
 
@@ -645,9 +641,6 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         visualScanTotal = visualCandidates.count
         visualScanProgress = 0
         isVisualScanning = !candidates.isEmpty
-        if dismissPreparationAfterPlanning {
-            isPreparingSearch = false
-        }
 
         // Keep background analysis deliberately gentle so navigation stays responsive.
         let batchSize = 1
@@ -1052,6 +1045,15 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
 
     private func refreshAfterLibraryChange(_ change: PHChange) async {
         guard authorizationStatus == .authorized || authorizationStatus == .limited else { return }
+        let wasPreparingInitialMemories = isPreparingInitialMemories
+        if wasPreparingInitialMemories {
+            launchPreparationStatus = "正在更新你的回忆"
+        }
+        defer {
+            if wasPreparingInitialMemories {
+                isPreparingInitialMemories = false
+            }
+        }
         startupPreparationTask?.cancel()
         if isVisualScanning || isSemanticIndexing {
             pendingLibraryRefresh = true
