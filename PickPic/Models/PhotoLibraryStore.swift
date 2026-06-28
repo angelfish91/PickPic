@@ -1580,11 +1580,21 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             var endDate: Date
         }
 
-        let locatedEvents = events.compactMap { event -> LocatedEvent? in
+        let chronologicalEvents = events.sorted { $0.startDate < $1.startDate }
+        let knownLocations = chronologicalEvents.compactMap { event -> LocatedEvent? in
             guard let location = representativeLocation(for: event.assets) else { return nil }
             return LocatedEvent(event: event, location: location)
         }
-        .sorted { $0.event.startDate < $1.event.startDate }
+        let locationReferences = knownLocations.map { (event: $0.event, location: $0.location) }
+        let locatedEvents = chronologicalEvents.compactMap { event -> LocatedEvent? in
+            if let location = representativeLocation(for: event.assets) {
+                return LocatedEvent(event: event, location: location)
+            }
+            guard let location = inferredLocation(for: event, from: locationReferences) else {
+                return nil
+            }
+            return LocatedEvent(event: event, location: location)
+        }
         let residentLocations = inferredResidentLocations(from: events.flatMap(\.assets))
         let awayEvents = locatedEvents.filter { item in
             !residentLocations.contains { item.location.distance(from: $0) <= 20_000 }
@@ -1636,6 +1646,35 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
             )
         }
         .sorted { $0.endDate > $1.endDate }
+    }
+
+    nonisolated private static func inferredLocation(
+        for event: PhotoEvent,
+        from locatedEvents: [(event: PhotoEvent, location: CLLocation)]
+    ) -> CLLocation? {
+        let maximumInferenceGap: TimeInterval = 18 * 60 * 60
+        let candidates = locatedEvents.compactMap { located -> (CLLocation, TimeInterval)? in
+            let gap: TimeInterval
+            if located.event.endDate < event.startDate {
+                gap = event.startDate.timeIntervalSince(located.event.endDate)
+            } else if event.endDate < located.event.startDate {
+                gap = located.event.startDate.timeIntervalSince(event.endDate)
+            } else {
+                gap = 0
+            }
+            guard gap <= maximumInferenceGap else { return nil }
+            return (located.location, gap)
+        }
+        .sorted { $0.1 < $1.1 }
+
+        guard let nearest = candidates.first else { return nil }
+        if candidates.count >= 2 {
+            let other = candidates[1]
+            guard nearest.0.distance(from: other.0) <= 50_000 else {
+                return nearest.1 <= 2 * 60 * 60 ? nearest.0 : nil
+            }
+        }
+        return nearest.0
     }
 
     nonisolated private static func representativeLocation(for assets: [PHAsset]) -> CLLocation? {
@@ -1711,27 +1750,35 @@ final class PhotoLibraryStore: NSObject, ObservableObject, PHPhotoLibraryChangeO
         travelLocationTask = Task { [weak self] in
             for event in unresolved {
                 guard !Task.isCancelled,
-                      let location = event.assets.compactMap(\.location).first
+                      let location = Self.representativeLocation(for: event.assets)
                 else {
                     continue
                 }
 
-                let name = await Self.cityName(for: location)
+                let name = await Self.locationName(for: location)
                 guard !Task.isCancelled else { return }
                 self?.travelLocationNames[event.id] = name
             }
         }
     }
 
-    nonisolated private static func cityName(for location: CLLocation) async -> String {
+    nonisolated private static func locationName(for location: CLLocation) async -> String {
         await withCheckedContinuation { continuation in
             CLGeocoder().reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "zh_CN")) {
                 placemarks,
                 _ in
                 let placemark = placemarks?.first
-                let name = placemark?.locality
-                    ?? placemark?.subAdministrativeArea
+                let city = placemark?.locality
                     ?? placemark?.administrativeArea
+                    ?? placemark?.country
+                let area = placemark?.subLocality
+                    ?? placemark?.subAdministrativeArea
+                let name: String?
+                if let city, let area, city != area, !city.contains(area) {
+                    name = "\(city) · \(area)"
+                } else {
+                    name = area ?? city
+                }
                 continuation.resume(returning: name ?? "位置已记录")
             }
         }

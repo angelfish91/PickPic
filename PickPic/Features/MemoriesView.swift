@@ -222,7 +222,7 @@ struct MemoriesView: View {
                 Text(travelDateRange(event))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.72))
-                Text("\(event.assets.count) 张带位置照片")
+                Text("\(event.assets.count) 张旅途照片")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.68))
             }
